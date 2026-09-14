@@ -1,0 +1,818 @@
+/**
+ * ====================================================================
+ * 🏢 场地借用管理系统 - 后端核心脚本 (Code.gs)  [谷歌账户白名单拦截版]
+ * ====================================================================
+ */
+
+function doGet(e) {
+  let page = (e && e.parameter && e.parameter.page) ? e.parameter.page : 'admin';
+  
+  // 🛡️ 核心安全卡点：如果访问的是管理端(admin)，执行严格的谷歌账户白名单物理拦截
+  if (page === 'admin') {
+    const userEmail = Session.getActiveUser().getEmail(); // 自动抓取当前访问者的谷歌邮箱
+    
+    // 调用白名单校验函数
+    if (!checkAdminWhitelist(userEmail)) {
+      // 校验失败，直接在服务器端拒绝渲染网页，输出安全警告
+      return HtmlService.createHtmlOutput(
+        "<div style='text-align:center; padding-top:60px; font-family:\"Segoe UI\",Arial,sans-serif; color:#333;'>" +
+        "<h2 style='color:#c00000; font-weight:bold;'>🔒 访问被拒绝 (Unauthorized Access)</h2>" +
+        "<p style='margin-top:20px; font-size:15px;'>您的谷歌账户：<b style='color:#0056b3;'>" + (userEmail || "无法获取/未登录") + "</b> 不在合法的管理员白名单中。</p>" +
+        "<p style='color:#666; font-size:13px; margin-top:30px;'>※ 若您拥有管理权限，请联系系统创建者在《场地编号》工作表的【管理员邮箱】列中追加您的账号。</p>" +
+        "</div>"
+      ).setTitle('拒绝访问').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
+  }
+  
+  // 校验通过或访问的是公众视图，放行路由
+  if (page === 'view') {
+    // 🔧 文件名同步：Apps Script 里的日历浏览页面文件已改名为 "Viewver"，这里跟着改，
+    // 避免文件名对不上导致白屏（这也是你们自己开发日志里排查点1提过的最常见坑）
+    return HtmlService.createTemplateFromFile('Viewver').evaluate()
+        .setTitle('场地借用日历 (浏览模式)').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  } else if (page === 'table') {
+    return HtmlService.createTemplateFromFile('Table').evaluate()
+        .setTitle('场地借用总表 (矩阵视图)').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+  
+  // 完好渲染管理端
+  return HtmlService.createTemplateFromFile('Admin').evaluate()
+      .setTitle('场地借用管理系统').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/**
+ * 🔑 智能白名单比对核心引擎
+ */
+function checkAdminWhitelist(email) {
+  if (!email) return false;
+  email = email.toLowerCase().trim();
+  
+  // 🛡️ 安全特权兜底：当前脚本的拥有者（即您本人）永远拥有最高特权，防止误操作将自己锁死
+  const OWNER_EMAIL = Session.getEffectiveUser().getEmail().toLowerCase().trim();
+  if (email === OWNER_EMAIL) return true;
+  
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('场地编号');
+    if (!sheet) return false;
+    
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return false;
+    
+    const headers = data[0];
+    // 动态寻找名为“管理员邮箱”的列索引
+    const emailIndex = headers.indexOf('管理员邮箱');
+    if (emailIndex === -1) return false; 
+    
+    // 循环内存数据检索匹配
+    for (let i = 1; i < data.length; i++) {
+      const whitelistEmail = String(data[i][emailIndex]).toLowerCase().trim();
+      if (whitelistEmail === email) {
+        return true; // 完美咬合匹配，放行通过
+      }
+    }
+  } catch(err) {
+    console.error("白名单数据流管道异常: " + err.message);
+  }
+  return false; // 默认没有登记的账号一律封杀
+}
+
+function getWebAppUrl() {
+  try { return ScriptApp.getService().getUrl(); } catch(e) { return ""; }
+}
+
+/**
+ * 🛡️ 安全拦截：写入类操作（新增/修改/删除）必须调用这个函数做二次校验。
+ * 之前的白名单只挡在 doGet 渲染管理端页面那一层，任何人只要打开公开的
+ * 日历/总表网址、在浏览器控制台直接呼叫 google.script.run.createRecord(...)
+ * 之类的写入函数，就能完全绕过白名单。这里把校验直接钉在写入函数本身，
+ * 不管从哪个页面发起调用都逃不掉。
+ */
+function requireAdminAccess() {
+  const email = Session.getActiveUser().getEmail();
+  if (!checkAdminWhitelist(email)) {
+    throw new Error('⛔ 权限不足：您的账号（' + (email || '未登录/无法获取') + '）不在管理员白名单中，无法执行此操作。');
+  }
+  return email;
+}
+
+// 🆕 存储结构升级：原本「时间」是一个组合字符串栏位，现在拆成「时间(开始)」/「时间(结束)」两个独立栏位
+const HEADERS = ['ID', '场地', '活动', '单位', '时间(开始)', '时间(结束)', '填写人', '填写日期', '使用日期', '系统时间戳'];
+const TRASH_SHEET_NAME = '已删除记录(回收站)';
+const AUDIT_SHEET_NAME = '操作日志';
+
+function normalizeDateToISO(val) {
+  if (val === null || val === undefined) return "";
+  if (val instanceof Date) return Utilities.formatDate(val, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var str = String(val).trim();
+  if (!str) return "";
+  if (str.indexOf('/') !== -1) {
+    var parts = str.split('/');
+    if (parts.length === 3) {
+      if (parts[2].length === 4) return parts[2] + "-" + parts[1].padStart(2, '0') + "-" + parts[0].padStart(2, '0');
+      if (parts[0].length === 4) return parts[0] + "-" + parts[1].padStart(2, '0') + "-" + parts[2].padStart(2, '0');
+    }
+  }
+  if (str.indexOf('-') !== -1) {
+    var parts = str.split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) return parts[0] + "-" + parts[1].padStart(2, '0') + "-" + parts[2].padStart(2, '0');
+      if (parts[2].length === 4) return parts[2] + "-" + parts[1].padStart(2, '0') + "-" + parts[0].padStart(2, '0');
+    }
+  }
+  return str;
+}
+
+// 🏷️ 判断一个"单位"编号是不是"学会团体"（例如 "A-摄影学会"、"E-辩论学会"，用纯字母开头编号），
+// 跟"学校行政团体"（例如 "01-校长室"、"10-总务处"，用数字编号）区分开。矩阵总表的单位颜色
+// 功能目前只服务学校行政团体，学会团体不需要在矩阵总表出现颜色/图例。
+function isClubUnitCode(unitName) {
+  const trimmed = String(unitName || '').trim();
+  if (!trimmed) return false;
+  const dashIdx = trimmed.indexOf('-');
+  const prefix = dashIdx > -1 ? trimmed.substring(0, dashIdx) : trimmed;
+  // 🔧 编号格式其实是"字母+数字"（例如 A01、B02...E0X），不是纯字母，所以改成只看
+  // 编号前缀是不是以字母开头——只要以字母开头（不管后面接不接数字）都算学会团体；
+  // 以数字开头（例如 01、10）才是学校行政团体
+  return /^[A-Za-z]/.test(prefix);
+}
+
+// 🎨 读取《场地编号》工作表"单位"列里，管理员手动上的格子底色，按照该列由上到下的原始表格顺序
+// 整理成 [{ unit, color }, ...] 数组，给矩阵总表（Table.html）用颜色区分不同单位借用的格子，
+// 图例也照着这个顺序显示（改用数组而非物件返回，是为了避免"01"".."10"这种数字形态的
+// 键名被 JS 引擎按数字重新排序、打乱原本的表格顺序）。
+// - 同一单位如果在多行上了不同颜色，取第一个出现的颜色为准
+// - 没有特别上色（默认白色/透明）的单位不会出现在这份清单里
+// - 🆕"学会团体"（字母开头编号，如 A-摄影学会）一律跳过，矩阵总表只显示"学校行政团体"（数字编号）的颜色
+function getUnitColorMap() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('场地编号');
+    if (!sheet) return [];
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow <= 1) return [];
+    const headerRow = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const unitIndex = headerRow.indexOf('单位');
+    if (unitIndex === -1) return [];
+    const unitCol1 = unitIndex + 1;
+    const values = sheet.getRange(2, unitCol1, lastRow - 1, 1).getValues();
+    const backgrounds = sheet.getRange(2, unitCol1, lastRow - 1, 1).getBackgrounds();
+    const seen = new Set();
+    const colorList = [];
+    for (let i = 0; i < values.length; i++) {
+      const unitName = String(values[i][0]).trim();
+      if (!unitName || seen.has(unitName)) continue;
+      if (isClubUnitCode(unitName)) continue; // 🆕 学会团体不需要显示在矩阵总表
+      const color = String(backgrounds[i][0] || '').toLowerCase();
+      // 跳过默认白色/无填色的格子，避免把"没特别设色"的单位也强制染成白底
+      if (!color || color === '#ffffff') continue;
+      seen.add(unitName); // 只有真正取到颜色、加入清单的单位才标记为已处理，同一单位第一笔没上色不影响后面行再检查一次
+      colorList.push({ unit: unitName, color: color });
+    }
+    return colorList;
+  } catch(err) { return []; }
+}
+
+function getVenuesFromSheet() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('场地编号');
+    const data = sheet.getDataRange().getValues();
+    let venueList = [];
+    for (let i = 1; i < data.length; i++) {
+      let code = String(data[i][0]).trim();
+      let name = String(data[i][1]).trim();
+      if (code) { venueList.push({ code: code, name: name }); }
+    }
+    return venueList;
+  } catch(err) { throw new Error(err.message); }
+}
+
+function getUnitsFromSheet() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('场地编号');
+    if (!sheet) return [];
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+    const headers = data[0];
+    const unitIndex = headers.indexOf('单位');
+    if (unitIndex === -1) return []; 
+    const unitSet = new Set();
+    for (let i = 1; i < data.length; i++) {
+      const unitVal = String(data[i][unitIndex]).trim();
+      if (unitVal) unitSet.add(unitVal);
+    }
+    return Array.from(unitSet).sort();
+  } catch(err) { return []; }
+}
+
+// 把工作表某一行的原始值，按表头转换成前端要用的记录对象（各处读取记录共用这份逻辑）
+function rowToRecordObj(headers, rowValues) {
+  let obj = {};
+  headers.forEach((header, index) => {
+    let val = rowValues[index];
+    if (header === '系统时间戳') {
+      obj[header] = (val instanceof Date) ? Utilities.formatDate(val, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss") : String(val);
+    } else if (header === '使用日期' || header === '填写日期') {
+      obj[header] = normalizeDateToISO(val);
+    } else if (header === '时间(开始)' || header === '时间(结束)') {
+      // 🔧 时间栏位如果被表格自动转成了 Date，这里洗回干净的 "HH:mm" 字符串
+      obj[header] = cellTimeToString(val);
+    } else {
+      obj[header] = (val === null || val === undefined) ? '' : String(val);
+    }
+  });
+  // 🔧 新旧结构兼容层：不管这一行来自新结构（时间(开始)/时间(结束) 两栏，尚未跑过迁移的旧月份
+  // 工作表仍是这样）还是旧结构（单一"时间"栏），这里都统一补出一个组合字符串 obj.时间，
+  // 让 Table.html / Viewer.html 完全不用关心底层存储方式的变化
+  if (obj['时间(开始)'] !== undefined || obj['时间(结束)'] !== undefined) {
+    const s = obj['时间(开始)'] || '';
+    const e = obj['时间(结束)'] || '';
+    obj['时间'] = (s || e) ? `${s}-${e}` : '';
+  }
+  return obj;
+}
+
+function readRecords() {
+  let allRecords = [];
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheets = ss.getSheets();
+    sheets.forEach(sheet => {
+      if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+      const sheetName = sheet.getName();
+      if (sheetName === '场地编号' || sheetName === TRASH_SHEET_NAME || sheetName === AUDIT_SHEET_NAME) return;
+      const data = sheet.getDataRange().getValues();
+      if (data.length > 1) {
+        const headers = data[0];
+        if (headers && headers[0] === 'ID') {
+          for (let i = 1; i < data.length; i++) {
+            allRecords.push(rowToRecordObj(headers, data[i]));
+          }
+        }
+      }
+    });
+  } catch (err) { throw new Error(err.message); }
+  return allRecords;
+}
+
+// ⚡ 性能优化：Table.html 矩阵总表一次只看一个月，没必要每次都拉全部历史月份的数据。
+// 只读取 monthKey（如 "2026-09"）对应的那张月份工作表。
+function readRecordsForMonth(monthKey) {
+  try {
+    if (!monthKey) return [];
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(monthKey);
+    if (!sheet) return [];
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+    const headers = data[0];
+    if (!headers || headers[0] !== 'ID') return [];
+    const records = [];
+    for (let i = 1; i < data.length; i++) {
+      records.push(rowToRecordObj(headers, data[i]));
+    }
+    return records;
+  } catch (err) { throw new Error(err.message); }
+}
+
+// ⚡ 性能优化：Viewver.html 公众日历视图原本用 readRecords() 把系统里所有历史月份的记录
+// 一次性全部读出来，日历用久了、月份工作表越积越多只会越读越慢。日历翻页/切视图时
+// FullCalendar 会带出当前可视区间的起讫日期（月视图通常还会带出前后月份的补白日子，
+// 横跨 2~3 个月），这里改成只读取跟 [startDateStr, endDateStr] 这个区间有交集的月份
+// 工作表，读出来的行也只保留真正落在区间内的那些。
+function readRecordsForRange(startDateStr, endDateStr) {
+  try {
+    if (!startDateStr || !endDateStr) return [];
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const startParts = startDateStr.split('-');
+    const endParts = endDateStr.split('-');
+    const cursor = new Date(Number(startParts[0]), Number(startParts[1]) - 1, 1);
+    const endMonth = new Date(Number(endParts[0]), Number(endParts[1]) - 1, 1);
+
+    const allRecords = [];
+    while (cursor <= endMonth) {
+      const monthKey = Utilities.formatDate(cursor, Session.getScriptTimeZone(), "yyyy-MM");
+      const sheet = ss.getSheetByName(monthKey);
+      if (sheet) {
+        const data = sheet.getDataRange().getValues();
+        if (data.length > 1) {
+          const headers = data[0];
+          if (headers && headers[0] === 'ID') {
+            for (let i = 1; i < data.length; i++) {
+              const rec = rowToRecordObj(headers, data[i]);
+              // 月份工作表整月都在，但只保留真正落在所请求区间内的那些行
+              if (rec.使用日期 && rec.使用日期 >= startDateStr && rec.使用日期 <= endDateStr) {
+                allRecords.push(rec);
+              }
+            }
+          }
+        }
+      }
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+    return allRecords;
+  } catch (err) { throw new Error(err.message); }
+}
+
+function formatDateStr(dateStr) {
+  if (!dateStr) return "";
+  const parts = dateStr.split('-');
+  if(parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  return dateStr;
+}
+
+/**
+ * 🗑️ 回收站 + 📋 操作日志
+ * ====================================================================
+ * 之前删除是物理擦除、无法复原，也完全没有留痕（填写人是自由填写的文字，
+ * 不代表真实操作者）。现在删除前会先把整行归档到回收站工作表，并且
+ * 新增/修改/删除都会写一笔操作日志（含真实谷歌账号），方便事后追责或找回误删数据。
+ */
+function getTrashSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TRASH_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(TRASH_SHEET_NAME);
+    sheet.appendRow(['删除时间', '操作人邮箱'].concat(HEADERS));
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, 2 + HEADERS.length).setFontWeight("bold");
+    // 🔧 防止时间栏位被表格自动识别成 Date：前面有"删除时间""操作人邮箱"两栏偏移，
+    // 时间(开始)/时间(结束) 在 HEADERS 里是第 5、6 栏，这里要 +2
+    const startCol = HEADERS.indexOf('时间(开始)') + 1 + 2;
+    const endCol = HEADERS.indexOf('时间(结束)') + 1 + 2;
+    if (startCol > 2 && endCol > 2) {
+      sheet.getRange(1, startCol, sheet.getMaxRows(), 2).setNumberFormat('@');
+    }
+  }
+  return sheet;
+}
+
+function archiveToTrash(trashSheet, headers, rowValues, operatorEmail) {
+  try {
+    const deleteTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    // 如果这行来自尚未跑迁移的旧结构工作表（只有单一"时间"栏），先把组合文本拆成开始/结束，
+    // 这样归档进回收站的记录也能对齐新结构，不会漏掉时间信息
+    const hasSplitTime = headers.indexOf('时间(开始)') > -1 && headers.indexOf('时间(结束)') > -1;
+    const legacyTimeIdx = headers.indexOf('时间');
+    const legacySplit = (!hasSplitTime && legacyTimeIdx > -1) ? legacyTimeStringToStartEnd(rowValues[legacyTimeIdx]) : null;
+
+    // 按 HEADERS 固定顺序对齐，缺的栏位补空字符串，保证回收站格式统一
+    const alignedRow = HEADERS.map(h => {
+      if (legacySplit && h === '时间(开始)') return legacySplit.start;
+      if (legacySplit && h === '时间(结束)') return legacySplit.end;
+      const idx = headers.indexOf(h);
+      return idx === -1 ? '' : rowValues[idx];
+    });
+    trashSheet.appendRow([deleteTime, operatorEmail || '未知'].concat(alignedRow));
+  } catch(e) {
+    console.error('归档到回收站失败: ' + e.message);
+  }
+}
+
+function logAudit(actionType, operatorEmail, rowValues, headers) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(AUDIT_SHEET_NAME);
+      sheet.appendRow(['时间', '操作类型', '操作人邮箱', '记录ID', '场地', '活动', '单位', '时间段']);
+      sheet.setFrozenRows(1);
+      sheet.getRange("A1:H1").setFontWeight("bold");
+    }
+    const idIdx = headers.indexOf('ID');
+    const venueIdx = headers.indexOf('场地');
+    const eventIdx = headers.indexOf('活动');
+    const unitIdx = headers.indexOf('单位');
+    const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    sheet.appendRow([
+      now, actionType, operatorEmail || '未知',
+      idIdx > -1 ? rowValues[idIdx] : '',
+      venueIdx > -1 ? rowValues[venueIdx] : '',
+      eventIdx > -1 ? rowValues[eventIdx] : '',
+      unitIdx > -1 ? rowValues[unitIdx] : '',
+      formatRowTimeDisplay(headers, rowValues)
+    ]);
+  } catch(e) {
+    console.error('写入操作日志失败: ' + e.message);
+  }
+}
+
+/**
+ * 🛡️ 场地时段冲突防呆引擎
+ * ====================================================================
+ */
+
+// 🔧 把任意来源的"时间"栏位值统一转成干净的 "HH:mm" 字符串。
+// 根本问题：Google 表格看到 appendRow() 写进去的 "06:00" 这种文本，会自作聪明地
+// 把它自动识别并转存成内部的 Date/时间序列值（時區纪元 1899-12-30），如果栏位事先
+// 没有被设成"纯文本"格式。之后不管是显示还是拿去跟别的时间比较大小，都要先
+// 用这个函数把 Date 对象洗回 "HH:mm" 字符串，否则会显示成一整串很丑的 JS Date
+// toString()（例如 "Sat Dec 30 1899 06:00:00 GMT+0655 ..."），冲突检测也会因为
+// 正则匹配不到而直接放弃比对。
+function cellTimeToString(val) {
+  if (val === null || val === undefined || val === '') return '';
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, Session.getScriptTimeZone(), "HH:mm");
+  }
+  return String(val).trim();
+}
+
+// 把标准的 "HH:MM" 字符串转成分钟数，格式不对就返回 null
+function timeStrToMinutes(hhmm) {
+  if (!hhmm) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(cellTimeToString(hhmm)).trim());
+  if (!m) return null;
+  const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+  if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+  return h * 60 + mi;
+}
+
+// 兼容旧数据：从任意格式的组合时间文本（"14:00-16:00"、"08.00-1200"、
+// "开始:14:00 至 结束:16:00" 等）中提取出【开始/结束】分钟数，解析不出两组
+// 有效时间时返回 null（无法判断的一律不拦截，避免旧的脏数据格式把系统卡死）
+function parseTimeRangeToMinutes(timeStr) {
+  if (!timeStr) return null;
+  const regex = /(?:^|\D)(\d{1,2})[:.]?(\d{2})(?=\D|$)/g;
+  const matches = [];
+  let m;
+  const s = String(timeStr);
+  while ((m = regex.exec(s)) !== null) {
+    const h = parseInt(m[1], 10);
+    const mi = parseInt(m[2], 10);
+    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) matches.push(h * 60 + mi);
+  }
+  if (matches.length < 2) return null;
+  const range = { start: matches[0], end: matches[1] };
+  if (range.end <= range.start) return null; // 时间顺序不合理（如跨午夜），无法安全判断重叠，放行由人工核对
+  return range;
+}
+
+// 同样兼容旧数据：把组合时间文本拆成 {start, end} 两个 "HH:MM" 字符串（迁移/归档时用）
+function legacyTimeStringToStartEnd(timeStr) {
+  if (!timeStr) return { start: '', end: '' };
+  const regex = /(?:^|\D)(\d{1,2})[:.]?(\d{2})(?=\D|$)/g;
+  const matches = [];
+  let m;
+  const s = String(timeStr);
+  while ((m = regex.exec(s)) !== null) {
+    matches.push(String(m[1]).padStart(2, '0') + ':' + m[2]);
+  }
+  return { start: matches[0] || '', end: matches[1] || '' };
+}
+
+// 不管一张工作表是新结构（时间(开始)/时间(结束) 两栏）还是尚未迁移的旧结构（单一"时间"栏），
+// 都能算出某一行的 {start, end} 分钟数
+function getRowTimeRangeMinutes(headers, row) {
+  const startIdx = headers.indexOf('时间(开始)');
+  const endIdx = headers.indexOf('时间(结束)');
+  if (startIdx > -1 && endIdx > -1) {
+    const s = timeStrToMinutes(cellTimeToString(row[startIdx]));
+    const e = timeStrToMinutes(cellTimeToString(row[endIdx]));
+    if (s === null || e === null || e <= s) return null;
+    return { start: s, end: e };
+  }
+  const timeIdx = headers.indexOf('时间');
+  if (timeIdx > -1) return parseTimeRangeToMinutes(row[timeIdx]);
+  return null;
+}
+
+// 不管新旧结构，都拼出一个人看得懂的 "HH:MM-HH:MM" 展示文字（用于冲突提示/审计日志）
+function formatRowTimeDisplay(headers, row) {
+  const startIdx = headers.indexOf('时间(开始)');
+  const endIdx = headers.indexOf('时间(结束)');
+  if (startIdx > -1 && endIdx > -1) return `${cellTimeToString(row[startIdx])}-${cellTimeToString(row[endIdx])}`;
+  const timeIdx = headers.indexOf('时间');
+  return timeIdx > -1 ? row[timeIdx] : '';
+}
+
+// 检查【某场地】在【某天】的【某时间段】（开始/结束的 "HH:MM" 字符串）是否与既有记录重叠
+// excludeId：编辑记录时排除自己原本那一笔，避免跟自己"冲突"
+function findVenueTimeConflict(venueCode, dateString, timeStartStr, timeEndStr, excludeId) {
+  const newStart = timeStrToMinutes(timeStartStr);
+  const newEnd = timeStrToMinutes(timeEndStr);
+  if (newStart === null || newEnd === null || newEnd <= newStart) return null; // 新记录时间格式无法解析时不拦截
+
+  const sheet = getSheetForDate(dateString);
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return null;
+  const data = sheet.getRange(1, 1, lastRow, sheet.getLastColumn()).getValues();
+  const headers = data[0];
+  const idIdx = headers.indexOf('ID');
+  const venueIdx = headers.indexOf('场地');
+  const eventIdx = headers.indexOf('活动');
+  const useDateIdx = headers.indexOf('使用日期');
+  if (idIdx === -1 || venueIdx === -1 || useDateIdx === -1) return null;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (excludeId && String(row[idIdx]) === String(excludeId)) continue;
+    if (String(row[venueIdx]).trim() !== String(venueCode).trim()) continue;
+    if (normalizeDateToISO(row[useDateIdx]) !== dateString) continue;
+
+    const existingRange = getRowTimeRangeMinutes(headers, row);
+    if (!existingRange) continue; // 既有数据时间格式无法解析时不拦截（多半是历史遗留数据）
+
+    // 区间重叠判定：newStart < existingEnd 且 existingStart < newEnd
+    if (newStart < existingRange.end && existingRange.start < newEnd) {
+      return {
+        conflictId: row[idIdx],
+        conflictEvent: row[eventIdx],
+        conflictTime: formatRowTimeDisplay(headers, row)
+      };
+    }
+  }
+  return null;
+}
+
+function createRecord(record) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    let startParts = record.useDate.split('-');
+    let startDate = new Date(Number(startParts[0]), Number(startParts[1]) - 1, Number(startParts[2]));
+    let endDate = startDate;
+    if (record.endDate) {
+      let endParts = record.endDate.split('-');
+      endDate = new Date(Number(endParts[0]), Number(endParts[1]) - 1, Number(endParts[2]));
+    }
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    const formattedFillDate = formatDateStr(record.fillDate);
+
+    // 🆕 按星期重复：例如"02月01日至03月01日的每个星期六"。record.recurWeekdays 是
+    // 0~6 的星期几数组（0=周日...6=周六，对齐 JS Date.getDay()），只有传了这个字段
+    // 才启用过滤，不影响原本"连续每天"的用法（未传或空数组 = 不过滤，维持原行为）
+    const recurSet = (record.recurWeekdays && record.recurWeekdays.length > 0)
+      ? new Set(record.recurWeekdays.map(Number)) : null;
+
+    if (recurSet) {
+      // 先检查日期范围内到底有没有任何一天符合选中的星期几，避免用户选错日期区间/
+      // 星期几组合导致什么都没写入却毫无提示
+      let checkDate = new Date(startDate);
+      let hasMatch = false;
+      while (checkDate <= endDate) {
+        if (recurSet.has(checkDate.getDay())) { hasMatch = true; break; }
+        checkDate.setDate(checkDate.getDate() + 1);
+      }
+      if (!hasMatch) {
+        throw new Error('⛔ 所选的日期区间内，找不到任何一天符合勾选的星期几，请检查日期范围或星期几设置。');
+      }
+    }
+
+    // 🚧 第一步：先对整批「日期 × 场地」组合逐一扫描冲突，全部通过才真正写入，
+    // 避免连续借用横跨多天时写到一半才撞档，留下半套脏数据
+    let scanDate = new Date(startDate);
+    while (scanDate <= endDate) {
+      if (!recurSet || recurSet.has(scanDate.getDay())) {
+        const scanDateString = Utilities.formatDate(scanDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
+        for (let vi = 0; vi < record.venues.length; vi++) {
+          const conflict = findVenueTimeConflict(record.venues[vi], scanDateString, record.timeStart, record.timeEnd, null);
+          if (conflict) {
+            throw new Error(`⛔ 场地时段冲突：【${record.venues[vi]}】在 ${formatDateStr(scanDateString)} 已有借用记录「${conflict.conflictEvent}」（${conflict.conflictTime}），与本次提交的时间重叠，请修改时间或更换场地后再提交。`);
+          }
+        }
+      }
+      scanDate.setDate(scanDate.getDate() + 1);
+    }
+
+    // ✅ 第二步：确认无冲突后才正式写入（按星期重复时，只写入符合勾选星期几的那些日期）
+    let current = new Date(startDate);
+    while (current <= endDate) {
+      if (!recurSet || recurSet.has(current.getDay())) {
+        let dateString = Utilities.formatDate(current, Session.getScriptTimeZone(), "yyyy-MM-dd");
+        const sheet = getSheetForDate(dateString);
+        const formattedUseDate = formatDateStr(dateString);
+        record.venues.forEach(venueCode => {
+          // 🛡️ 改用完整 UUID（原本只取前 8 位），大幅降低长期高频使用下的撞号概率
+          const id = "ID_" + Utilities.getUuid();
+          const rowValues = [id, venueCode, record.event, record.unit, record.timeStart, record.timeEnd, record.filler, formattedFillDate, formattedUseDate, timestamp];
+          sheet.appendRow(rowValues);
+          logAudit('新增', operatorEmail, rowValues, HEADERS);
+        });
+      }
+      current.setDate(current.getDate() + 1);
+    }
+    return { success: true };
+  } catch(err) { throw new Error(err.message); }
+}
+
+function batchDeleteRecords(ids) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    if (!ids || ids.length === 0) return { success: true, count: 0 };
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheets = ss.getSheets();
+    let deletedCount = 0;
+    const idSet = new Set(ids);
+    const trashSheet = getTrashSheet();
+    sheets.forEach(sheet => {
+      if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+      const sheetName = sheet.getName();
+      if (sheetName === '场地编号' || sheetName === TRASH_SHEET_NAME || sheetName === AUDIT_SHEET_NAME) return;
+      const lastRow = sheet.getLastRow();
+      if (lastRow <= 1) return;
+      const lastColumn = sheet.getLastColumn();
+      const data = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+      const headers = data[0];
+      if (!headers || headers[0] !== 'ID') return;
+
+      // ⚡ 性能优化：改成只删中标的那几行（从后往前删，避免删除后行号错位），
+      // 不再是「整张表清空再整表重写」这种对大表很吃资源的做法
+      for (let i = data.length - 1; i >= 1; i--) {
+        if (idSet.has(data[i][0])) {
+          archiveToTrash(trashSheet, headers, data[i], operatorEmail); // 🗑️ 先归档到回收站再真正删除，误删可复原
+          logAudit('删除', operatorEmail, data[i], headers);
+          sheet.deleteRow(i + 1); // data 是 0-index，工作表行号是 1-index，第 1 行是表头
+          deletedCount++;
+        }
+      }
+    });
+    return { success: true, count: deletedCount };
+  } catch(err) { throw new Error(err.message); }
+}
+
+function updateRecord(id, record) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    let singleVenue = (record.venues && record.venues.length > 0) ? record.venues[0] : '';
+
+    // 🚧 编辑记录同样要检查冲突，但排除自己原本这一笔，避免跟自己"撞档"
+    const conflict = findVenueTimeConflict(singleVenue, record.useDate, record.timeStart, record.timeEnd, id);
+    if (conflict) {
+      throw new Error(`⛔ 场地时段冲突：【${singleVenue}】在 ${formatDateStr(record.useDate)} 已有借用记录「${conflict.conflictEvent}」（${conflict.conflictTime}），与本次修改后的时间重叠，请修改时间或更换场地后再保存。`);
+    }
+
+    batchDeleteRecords([id]); // 旧版本会被归档到回收站、并留一笔"删除"审计记录
+    const sheet = getSheetForDate(record.useDate);
+    const formattedUseDate = formatDateStr(record.useDate);
+    const formattedFillDate = formatDateStr(record.fillDate);
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    const rowValues = [id, singleVenue, record.event, record.unit, record.timeStart, record.timeEnd, record.filler, formattedFillDate, formattedUseDate, timestamp];
+    sheet.appendRow(rowValues);
+    logAudit('修改', operatorEmail, rowValues, HEADERS);
+    return { success: true };
+  } catch(err) { throw new Error(err.message); }
+}
+
+function getSheetForDate(dateString) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const monthKey = dateString.substring(0, 7);
+  let sheet = ss.getSheetByName(monthKey);
+  if (!sheet) {
+    sheet = ss.insertSheet(monthKey);
+    sheet.appendRow(HEADERS);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold"); // 表头栏位数改成跟着 HEADERS 走，不再写死到 I 列
+    // 🔧 关键修复：时间(开始)/时间(结束) 两栏强制设成纯文本格式，防止表格把 "06:00"
+    // 这种文本自动识别转存成 Date/时间序列值（这正是"借用时间显示成一大串英文 Date"
+    // 这个问题的根源）。整栏都设，覆盖未来任何一行新增的数据。
+    const startCol = HEADERS.indexOf('时间(开始)') + 1;
+    const endCol = HEADERS.indexOf('时间(结束)') + 1;
+    if (startCol > 0 && endCol > 0) {
+      sheet.getRange(1, startCol, sheet.getMaxRows(), 2).setNumberFormat('@');
+    }
+  }
+  return sheet;
+}
+
+/**
+ * 🔧【一次性迁移工具】把旧结构（单一"时间"栏位）的月份工作表，就地升级成
+ * 新结构（"时间(开始)"/"时间(结束)" 两栏）。
+ *
+ * 使用方法：把这份新版 Code.gs 完整贴上去存档后，在 Apps Script 编辑器最上方的
+ * 函数下拉选单选择 migrateAllSheetsToSplitTimeSchema，点击「运行」执行一次即可
+ * （第一次运行可能会跳出权限授权，照常允许即可）。只需要跑这一次——它会自动找出
+ * 所有还是旧结构的月份工作表，把"时间"栏位原地拆成两栏，并把每一行既有的组合时间
+ * 文本拆成开始/结束分别填入，其余栏位内容和位置都不受影响。已经是新结构、或本来
+ * 就不是借用记录数据表（比如《场地编号》《已删除记录(回收站)》《操作日志》）的
+ * 工作表会自动跳过。之后新增的记录会自动套用新结构，不需要再跑第二次。
+ */
+function migrateAllSheetsToSplitTimeSchema() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+  let migratedCount = 0;
+  const migratedSheetNames = [];
+
+  sheets.forEach(sheet => {
+    if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+    const sheetName = sheet.getName();
+    if (sheetName === '场地编号' || sheetName === TRASH_SHEET_NAME || sheetName === AUDIT_SHEET_NAME) return;
+
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow < 1 || lastColumn < 1) return;
+
+    const headerRow = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    if (!headerRow || headerRow[0] !== 'ID') return; // 不是借用记录数据表，跳过
+
+    const hasNewSplitCols = headerRow.indexOf('时间(开始)') > -1 && headerRow.indexOf('时间(结束)') > -1;
+    const oldTimeColIndex1 = headerRow.indexOf('时间') + 1; // 转成 1-index 的表格列号，找不到时是 0
+    if (hasNewSplitCols || oldTimeColIndex1 === 0) return; // 已经是新结构，或找不到旧的"时间"栏位，跳过
+
+    // 在旧"时间"栏位右边插入一个新列，Google 表格会自动把它右边的栏位整体后移，不影响其他数据
+    sheet.insertColumnAfter(oldTimeColIndex1);
+    sheet.getRange(1, oldTimeColIndex1).setValue('时间(开始)');
+    sheet.getRange(1, oldTimeColIndex1 + 1).setValue('时间(结束)');
+
+    // 🔧 先把这两栏整栏设成纯文本格式，再写入 "HH:mm" 字符串，避免表格自动识别成 Date
+    sheet.getRange(1, oldTimeColIndex1, sheet.getMaxRows(), 2).setNumberFormat('@');
+
+    // 把每一行原本的组合时间文本，拆成开始/结束两个独立栏位
+    if (lastRow > 1) {
+      const timeValues = sheet.getRange(2, oldTimeColIndex1, lastRow - 1, 1).getValues();
+      const splitValues = timeValues.map(rowArr => {
+        const parsed = legacyTimeStringToStartEnd(rowArr[0]);
+        return [parsed.start, parsed.end];
+      });
+      sheet.getRange(2, oldTimeColIndex1, lastRow - 1, 2).setValues(splitValues);
+    }
+
+    migratedCount++;
+    migratedSheetNames.push(sheetName);
+  });
+
+  const summary = migratedCount > 0
+    ? `✅ 迁移完成，共升级了 ${migratedCount} 张工作表：${migratedSheetNames.join('、')}`
+    : `ℹ️ 没有找到需要迁移的旧结构工作表（可能都已经是新结构，或系统里还没有任何借用记录）。`;
+  Logger.log(summary);
+  return summary;
+}
+
+/**
+ * 🔧【一次性修复工具】修复已经被表格自动转成 Date 类型的"时间(开始)"/"时间(结束)"
+ * 栏位数据（例如："借用时间"显示成 "Sat Dec 30 1899 06:00:00 GMT+0655 ..." 这种一大串
+ * 英文字符的问题）。
+ *
+ * 使用方法：把这份新版 Code.gs 完整贴上去存档后，在 Apps Script 编辑器最上方的
+ * 函数下拉选单选择 fixTimeColumnFormatting，点击「运行」执行一次即可（可能会跳出
+ * 权限授权，照常允许）。只需要跑这一次——它会把每张月份工作表的时间(开始)/时间(结束)
+ * 两栏整栏设为纯文本格式，并把已经被转存成 Date 的既有数据洗回干净的 "HH:mm" 字符串，
+ * 其余栏位不受影响。之后新建的工作表（getSheetForDate）会自动套用纯文本格式，
+ * 不会再发生同样的问题，不需要重复运行。
+ */
+function fixTimeColumnFormatting() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+  let fixedSheetCount = 0;
+  let fixedCellCount = 0;
+  const fixedSheetNames = [];
+
+  sheets.forEach(sheet => {
+    if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+    const sheetName = sheet.getName();
+    if (sheetName === '场地编号' || sheetName === AUDIT_SHEET_NAME) return;
+
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow < 1 || lastColumn < 1) return;
+
+    const headerRow = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const isTrash = sheetName === TRASH_SHEET_NAME;
+    // 回收站工作表的栏位相对 HEADERS 整体右移了 2 格（多了"删除时间""操作人邮箱"两栏）
+    const startIdx = headerRow.indexOf('时间(开始)');
+    const endIdx = headerRow.indexOf('时间(结束)');
+    if (startIdx === -1 || endIdx === -1) return; // 不是新结构工作表（可能还没跑迁移，或不是记录表），跳过
+    if (!isTrash && headerRow[0] !== 'ID') return;
+
+    const startCol1 = startIdx + 1;
+    const endCol1 = endIdx + 1;
+
+    // 先把整栏（含未来的空白行）强制设成纯文本格式，杜绝以后再被自动转成 Date
+    sheet.getRange(1, startCol1, sheet.getMaxRows(), 1).setNumberFormat('@');
+    sheet.getRange(1, endCol1, sheet.getMaxRows(), 1).setNumberFormat('@');
+
+    if (lastRow > 1) {
+      const startValues = sheet.getRange(2, startCol1, lastRow - 1, 1).getValues();
+      const endValues = sheet.getRange(2, endCol1, lastRow - 1, 1).getValues();
+      let sheetChanged = false;
+
+      const newStartValues = startValues.map(rowArr => {
+        const original = rowArr[0];
+        const fixed = cellTimeToString(original);
+        if (original instanceof Date) { sheetChanged = true; fixedCellCount++; }
+        return [fixed];
+      });
+      const newEndValues = endValues.map(rowArr => {
+        const original = rowArr[0];
+        const fixed = cellTimeToString(original);
+        if (original instanceof Date) { sheetChanged = true; fixedCellCount++; }
+        return [fixed];
+      });
+
+      if (sheetChanged) {
+        // 重新设一次纯文本格式再写值，确保覆写进去的是字符串而不会又被打回 Date
+        sheet.getRange(2, startCol1, lastRow - 1, 1).setNumberFormat('@').setValues(newStartValues);
+        sheet.getRange(2, endCol1, lastRow - 1, 1).setNumberFormat('@').setValues(newEndValues);
+        fixedSheetCount++;
+        fixedSheetNames.push(sheetName);
+      }
+    }
+  });
+
+  const summary = fixedSheetCount > 0
+    ? `✅ 修复完成，共处理了 ${fixedSheetCount} 张工作表、修正了 ${fixedCellCount} 个被误转成日期格式的时间格子：${fixedSheetNames.join('、')}`
+    : `ℹ️ 没有发现需要修复的时间格子（所有栏位已经是干净的文本格式）。`;
+  Logger.log(summary);
+  return summary;
+}

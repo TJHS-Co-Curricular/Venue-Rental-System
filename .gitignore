@@ -1,0 +1,5 @@
+# 配置文件
+.clasp.json
+
+# 文件夹（带空格直接书写即可）
+Claude outputs/

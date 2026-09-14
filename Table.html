@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>场地借用总表</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --accent: #2f6fed;
+            --accent-dark: #1f4fb8;
+            --ink: #1f2733;
+            --muted: #64748b;
+            --grid-line: #dde3ea;
+            --header-bg: #f4f6fa;
+            --panel-bg: #ffffff;
+            --page-bg: #f6f7fb;
+            --today-tint: #eaf2ff;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            padding: 18px;
+            background-color: var(--page-bg);
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+            color: var(--ink);
+        }
+
+        .page-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 2px 6px 14px;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .page-title .sub {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--muted);
+            margin-left: 4px;
+        }
+
+        .toolbar-row {
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        /* 🎨 图例：改成一颗颗圆角色块 chip，比原本的表格线条更现代、也更容易一眼扫过 */
+        .legend-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+            background: var(--panel-bg);
+            border: 1px solid var(--grid-line);
+            border-radius: 12px;
+            padding: 10px 14px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+        }
+
+        .legend-chip {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            color: var(--ink);
+            white-space: nowrap;
+        }
+
+        .legend-swatch {
+            width: 14px;
+            height: 14px;
+            border-radius: 4px;
+            border: 1px solid rgba(0, 0, 0, 0.12);
+            flex: 0 0 auto;
+        }
+
+        .month-picker-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--grid-line);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .excel-table-wrapper {
+            max-height: 78vh;
+            overflow: auto;
+            border: 1px solid var(--grid-line);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+            background: var(--panel-bg);
+        }
+
+        /* 细一点、圆角的滚动条（仅 WebKit 系浏览器生效，其他浏览器会退回默认样式，不影响功能） */
+        .excel-table-wrapper::-webkit-scrollbar { width: 10px; height: 10px; }
+        .excel-table-wrapper::-webkit-scrollbar-thumb { background: #c7ced9; border-radius: 6px; }
+        .excel-table-wrapper::-webkit-scrollbar-track { background: transparent; }
+
+        .matrix-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            background: var(--panel-bg);
+        }
+
+        .matrix-table th,
+        .matrix-table td {
+            border: 1px solid var(--grid-line);
+            text-align: center;
+            vertical-align: middle;
+            padding: 5px 3px;
+            line-height: 1.25;
+            white-space: nowrap;
+        }
+
+        .matrix-table th {
+            background-color: var(--header-bg);
+            color: var(--ink);
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            border-bottom: 2px solid #c2cbd8;
+            padding: 6px 3px;
+            box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+        }
+
+        .matrix-table tbody tr:hover td {
+            background-color: #f5f8ff;
+        }
+
+        .matrix-table tbody tr:hover td.sticky-left-1,
+        .matrix-table tbody tr:hover td.sticky-left-2,
+        .matrix-table tbody tr:hover td.mirror-right {
+            background-color: #eef3ff !important;
+        }
+
+        .sticky-left-1 {
+            position: sticky;
+            left: 0;
+            background-color: #fafbfd !important;
+            z-index: 11;
+            min-width: 65px;
+            font-weight: 600;
+            box-shadow: 2px 0 4px rgba(15, 23, 42, 0.05);
+        }
+
+        .sticky-left-2 {
+            position: sticky;
+            left: 65px;
+            background-color: #fafbfd !important;
+            z-index: 11;
+            min-width: 90px;
+            text-align: left !important;
+            padding-left: 8px !important;
+            color: var(--muted);
+            box-shadow: 2px 0 4px rgba(15, 23, 42, 0.05);
+        }
+
+        .mirror-right {
+            background-color: #fafbfd !important;
+            color: var(--muted);
+        }
+
+        .day-col {
+            width: 30px;
+            max-width: 30px;
+            min-width: 30px;
+            font-size: 11px;
+        }
+
+        .clickable-cell {
+            cursor: pointer !important;
+            transition: background-color 0.12s ease;
+        }
+
+        .clickable-cell:hover {
+            background-color: #dbe7ff !important;
+        }
+
+        /* ✅ 打勾格改成小圆徽章，比纯文字勾更醒目、也更容易点中 */
+        .check-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: #fff;
+            font-size: 11px;
+            line-height: 1;
+            font-weight: 700;
+        }
+
+        .weekend-header {
+            background-color: #ffe4e8 !important;
+            color: #c0284a;
+            font-weight: 700;
+        }
+
+        .weekend-cell {
+            background-color: #fff5f6 !important;
+        }
+
+        /* 🆕 今天所在的那一列加上高亮，一眼就能在长长的月份矩阵里找到今天 */
+        .today-header {
+            background-color: var(--accent) !important;
+            color: #fff !important;
+            box-shadow: inset 0 -2px 0 var(--accent-dark);
+        }
+
+        .today-cell {
+            background-color: var(--today-tint) !important;
+        }
+
+        .today-cell.weekend-cell {
+            background-color: #eef2ff !important;
+        }
+
+        .empty-col {
+            background: #f1f2f5;
+            color: #b6bcc7;
+        }
+
+        .loading-overlay {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.92);
+            z-index: 9999;
+        }
+
+        .loading-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        .loading-box .spinner-border {
+            color: var(--accent) !important;
+        }
+
+        @media (max-width: 640px) {
+            body { padding: 10px; }
+            .toolbar-row { flex-direction: column; align-items: stretch !important; }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container-fluid p-0">
+        <div class="page-title">
+            🏛️ 场地借用总表 <span class="sub">矩阵视图 · 公众浏览</span>
+        </div>
+
+        <div class="d-flex justify-content-end align-items-start toolbar-row mb-3">
+            <div class="month-picker-card">
+                <label class="fw-bold text-nowrap m-0" style="font-size:13px;">📅 切换月份</label>
+                <input type="month" id="monthPicker" class="form-control form-control-sm" style="width:140px;"
+                    onchange="onMonthChange()">
+            </div>
+        </div>
+
+        <div class="d-flex align-items-center flex-wrap gap-2 mb-3 d-none" id="unitLegendRow">
+            <span class="fw-bold text-nowrap" style="font-size:12.5px; color: var(--ink);">🏢 行政单位：</span>
+            <div class="legend-chips" id="unitLegendChips" style="flex:1 1 auto;"></div>
+        </div>
+
+        <div class="excel-table-wrapper">
+            <table class="matrix-table" id="matrixTable">
+                <thead>
+                    <tr id="theadRow"></tr>
+                </thead>
+                <tbody id="tbodyRows"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="modal fade" id="bookingDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content"
+                style="border: none; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
+                <div class="modal-header bg-primary text-white"
+                    style="border-top-left-radius: 14px; border-top-right-radius: 14px;">
+                    <h5 class="modal-title fw-bold">📌 场地借用详细明细</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4" id="modalMainBody"></div>
+                <div class="modal-footer bg-light"
+                    style="border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;">
+                    <button type="button" class="btn btn-secondary px-4 btn-sm rounded-pill"
+                        data-bs-dismiss="modal">安全关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-box">
+            <div class="spinner-border text-primary mb-2"></div>
+            <div class="fw-bold text-secondary small">正在构建场地借用矩阵总表...</div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let bookingRecords = [];
+        let staticVenues = [];
+        let unitColorList = []; // 🎨 [{unit, color}]，来自《场地编号》"单位"列的手动格子底色，严格保持表格原本的上下顺序
+        let unitColorMap = new Map(); // 上面数组的查找版（unit -> color），矩阵格子染色时用
+        let recordIndex = new Map(); // ⚡ 性能优化：日期+场地 -> 记录数组的索引，避免矩阵每一格都重新扫描全部记录
+        const weekdaysMap = ['日', '一', '二', '三', '四', '五', '六'];
+        const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i; // 防呆：只接受标准 6 位色码，其他一律当作没设色处理
+        const TOTAL_LOADS = 3; // 页面初始要并行等待的 3 个异步请求：场地列表 / 单位颜色映射 / 当月记录
+
+        // 🛡️ XSS 防呆：把用户输入的文字转成安全的 HTML 实体，再塞进 innerHTML
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const today = new Date();
+            document.getElementById('monthPicker').value = today.getFullYear() + '-' + String(today.getMonth() +
+                1).padStart(2, '0');
+
+            let loadCounter = 0;
+            google.script.run.withSuccessHandler(function (venues) {
+                staticVenues = venues || [];
+                checkAndRender(++loadCounter);
+            }).getVenuesFromSheet();
+
+            // 🎨 拉取《场地编号》"单位"列的手动格子底色（已按表格原始顺序排好、且已排除学会团体），
+            // 等下把矩阵里对应单位的格子染成同样的颜色
+            google.script.run.withSuccessHandler(function (colorList) {
+                unitColorList = colorList || [];
+                unitColorMap = new Map(unitColorList.map(item => [item.unit, item.color]));
+                renderUnitLegend();
+                checkAndRender(++loadCounter);
+            }).withFailureHandler(function () {
+                unitColorList = [];
+                unitColorMap = new Map();
+                checkAndRender(++loadCounter);
+            }).getUnitColorMap();
+
+            // ⚡ 性能优化：总表一次只看一个月，改成只拉当前所选月份的数据，
+            // 不再是每次打开都把系统里所有历史月份的记录一次性全部读出来
+            loadRecordsForSelectedMonth(() => checkAndRender(++loadCounter));
+        });
+
+        function checkAndRender(counter) {
+            if (counter === TOTAL_LOADS) {
+                renderMatrix();
+                document.getElementById('loadingOverlay').style.display = 'none';
+            }
+        }
+
+        // 🎨 在工具条下方生成"🏢 行政单位："图例：严格按 unitColorList（后端已按《场地编号》表格
+        // 原始顺序整理好、且已排除学会团体）的顺序显示，只列出真的有设色的单位
+        function renderUnitLegend() {
+            const row = document.getElementById('unitLegendRow');
+            const container = document.getElementById('unitLegendChips');
+            const items = unitColorList.filter(item => HEX_COLOR_RE.test(item.color));
+            if (items.length === 0) { row.classList.add('d-none'); container.innerHTML = ''; return; }
+            container.innerHTML = items.map(item =>
+                `<span class="legend-chip"><span class="legend-swatch" style="background:${item.color}"></span>${escapeHtml(item.unit)}</span>`
+            ).join('');
+            row.classList.remove('d-none');
+        }
+
+        function loadRecordsForSelectedMonth(callback) {
+            const selectedMonth = document.getElementById('monthPicker').value;
+            google.script.run
+                .withSuccessHandler(function (records) {
+                    bookingRecords = records || [];
+                    if (callback) callback();
+                })
+                .withFailureHandler(function (err) {
+                    alert('读取记录失败: ' + (err && err.message ? err.message : err));
+                    if (callback) callback();
+                })
+                .readRecordsForMonth(selectedMonth);
+        }
+
+        function onMonthChange() {
+            document.getElementById('loadingOverlay').style.display = 'block';
+            loadRecordsForSelectedMonth(function () {
+                renderMatrix();
+                document.getElementById('loadingOverlay').style.display = 'none';
+            });
+        }
+
+        // ⚡ 把记录按「日期|场地编号」建成索引，矩阵渲染时改成 O(1) 查表，
+        // 不用再对每一格都把全部记录扫一遍
+        function buildRecordIndex() {
+            const index = new Map();
+            bookingRecords.forEach(r => {
+                const recDate = r.使用日期 || '';
+                const rawVenue = (r.场地 || '').trim();
+                // 兼容历史数据可能存的是场地名称而非编号
+                const matchedVenue = staticVenues.find(v => rawVenue === v.code || rawVenue === v.name || rawVenue === (v.code + ' ' + (v.name || '')));
+                const resolvedCode = matchedVenue ? matchedVenue.code : rawVenue;
+                const key = recDate + '|' + resolvedCode;
+                if (!index.has(key)) index.set(key, []);
+                index.get(key).push(r);
+            });
+            return index;
+        }
+
+        function renderMatrix() {
+            const selectedMonth = document.getElementById('monthPicker').value;
+            if (!selectedMonth || staticVenues.length === 0) return;
+
+            recordIndex = buildRecordIndex(); // 每次渲染前重建一次索引（O(记录数)），比每格都扫一遍全部记录快得多
+
+            const [year, month] = selectedMonth.split('-');
+            const daysInMonth = new Date(year, month, 0).getDate();
+
+            // 🆕 找出"今天"是几号（只有在浏览的月份正好是本月时才会命中），方便在矩阵里高亮整列
+            const today = new Date();
+            const todayDateStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+            const isViewingCurrentMonth = (selectedMonth === today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0'));
+
+            const thead = document.getElementById('theadRow');
+            const tbody = document.getElementById('tbodyRows');
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+
+            let headHtml = `<th class="sticky-left-1">课室<br>编号</th><th class="sticky-left-2">班级<br>名称</th>`;
+            for (let d = 1; d <= 31; d++) {
+                if (d > daysInMonth) {
+                    headHtml += `<th class="day-col empty-col">${d}<br>-</th>`;
+                    continue;
+                }
+                const dateObj = new Date(year, parseInt(month) - 1, d);
+                const dayOfWeek = dateObj.getDay();
+                const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                const isToday = isViewingCurrentMonth && d === today.getDate();
+                let headClass = 'day-col';
+                if (isToday) headClass += ' today-header';
+                else if (isWeekend) headClass += ' weekend-header';
+                headHtml += `<th class="${headClass}">${d}<br>${weekdaysMap[dayOfWeek]}</th>`;
+            }
+            headHtml += `<th class="mirror-right">课室<br>编号</th><th class="mirror-right">班级<br>名称</th>`;
+            thead.innerHTML = headHtml;
+
+            staticVenues.forEach(venue => {
+                let rowHtml =
+                    `<td class="sticky-left-1">${venue.code}</td><td class="sticky-left-2">${venue.name || ''}</td>`;
+
+                for (let day = 1; day <= 31; day++) {
+                    if (day > daysInMonth) {
+                        rowHtml += `<td class="empty-col">-</td>`;
+                        continue;
+                    }
+
+                    const dayStr = String(day).padStart(2, '0');
+                    const currentCheckDate = `${year}-${month}-${dayStr}`;
+
+                    const dateObj = new Date(year, parseInt(month) - 1, day);
+                    const dayOfWeek = dateObj.getDay();
+                    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                    let cellClasses = [];
+                    if (isWeekend) cellClasses.push('weekend-cell');
+                    if (currentCheckDate === todayDateStr) cellClasses.push('today-cell');
+
+                    // ⚡ 改用索引查表（O(1)），不再对每一格都重新过滤一遍全部记录
+                    const matches = recordIndex.get(currentCheckDate + '|' + venue.code) || [];
+
+                    if (matches.length > 0) {
+                        cellClasses.push('clickable-cell');
+                        // 🎨 按这一格里涉及的借用单位，套用《场地编号》表上设置的对应颜色（整格染色）；
+                        // 同一格如果有多个不同单位（同场地同天但时段不重叠的多笔借用），用斜向分段的渐层
+                        // 一次性把每个单位的颜色都展示出来，而不是只显示其中一个
+                        const cellColors = [];
+                        matches.forEach(m => {
+                            const u = String(m.单位 || '').trim();
+                            const c = unitColorMap.get(u);
+                            if (c && HEX_COLOR_RE.test(c) && cellColors.indexOf(c) === -1) cellColors.push(c);
+                        });
+                        let styleAttr = '';
+                        if (cellColors.length === 1) {
+                            styleAttr = ` style="background-color:${cellColors[0]} !important;"`;
+                        } else if (cellColors.length > 1) {
+                            const n = cellColors.length;
+                            const stops = cellColors.map((c, i) =>
+                                `${c} ${(i / n * 100).toFixed(2)}%, ${c} ${((i + 1) / n * 100).toFixed(2)}%`
+                            ).join(', ');
+                            styleAttr = ` style="background-image: linear-gradient(135deg, ${stops}) !important;"`;
+                        }
+                        rowHtml +=
+                            `<td class="${cellClasses.join(' ')}"${styleAttr} onclick="showBookingModal('${venue.code}', '${venue.name || ''}', '${currentCheckDate}')"><span class="check-badge">✔</span></td>`;
+                    } else {
+                        rowHtml += `<td class="${cellClasses.join(' ')}"></td>`;
+                    }
+                }
+
+                rowHtml +=
+                    `<td class="mirror-right">${venue.code}</td><td class="mirror-right">${venue.name || ''}</td>`;
+                tbody.insertAdjacentHTML('beforeend', `<tr>${rowHtml}</tr>`);
+            });
+        }
+
+        function showBookingModal(venueCode, venueName, dateStr) {
+            const matches = recordIndex.get(dateStr + '|' + venueCode) || [];
+
+            if (matches.length === 0) return;
+
+            const modalBody = document.getElementById('modalMainBody');
+            modalBody.innerHTML = '';
+
+            matches.forEach((m, index) => {
+                let blockHtml = `
+        <div class="booking-item-block ${index > 0 ? 'mt-4 pt-3 border-top' : ''}">
+          <div class="d-flex align-items-center mb-3">
+            <span class="badge bg-info text-dark px-3 py-2 me-3 fw-bold" style="font-size: 14px;">${escapeHtml(venueCode)}</span>
+            <h5 class="m-0 fw-bold text-dark">${escapeHtml(m.活动) || '无活动'}</h5>
+          </div>
+          <table class="table table-borderless m-0" style="font-size: 15px;">
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🏢 借用单位:</td>
+              <td class="text-dark fw-bold">${escapeHtml(m.单位) || '-'}</td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🕒 借用时间:</td>
+              <td class="text-danger fw-bold">${escapeHtml(m.时间) || '-'}</td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">✍️ 申请人员:</td>
+              <td class="text-dark">${escapeHtml(m.填写人) || '无'}</td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">📝 填写日期:</td>
+              <td class="text-muted">${escapeHtml(m.填写日期) || '-'}</td>
+            </tr>
+          </table>
+        </div>
+      `;
+                modalBody.insertAdjacentHTML('beforeend', blockHtml);
+            });
+
+            const myModal = new bootstrap.Modal(document.getElementById('bookingDetailModal'));
+            myModal.show();
+        }
+    </script>
+</body>
+
+</html>
