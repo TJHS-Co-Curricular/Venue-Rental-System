@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>场地借用电视看板</title>
+  <style>
+    :root {
+      --accent: #2f6fed;
+      --accent-dark: #1f4fb8;
+      --ink: #1f2733;
+      --muted: #64748b;
+      --grid-line: #dde3ea;
+      --grid-line-soft: #eef1f5;
+      --header-bg: #f4f6fa;
+      --panel-bg: #ffffff;
+      --page-bg: #eef1f6;
+      --today-tint: #eaf2ff;
+      --special-tint: rgba(230, 126, 34, 0.14);
+      --special-badge: rgba(214, 108, 20, 0.92);
+      --now-line: #e6483c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--page-bg);
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      /* 📺 电视看板整页不需要滚动，超出的内容让各自卡片内部自己滚 */
+      overflow: hidden;
+    }
+
+    .board-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 14px 18px 10px;
+    }
+
+    .board-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      flex: 0 0 auto;
+    }
+
+    .board-title {
+      font-size: clamp(20px, 2vw, 28px);
+      font-weight: 700;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .board-title .sub {
+      font-size: clamp(12px, 1.1vw, 15px);
+      font-weight: 500;
+      color: var(--muted);
+    }
+
+    .board-clock {
+      text-align: right;
+      flex: 0 0 auto;
+    }
+
+    .board-clock .clock-time {
+      font-size: clamp(18px, 2vw, 26px);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent-dark);
+      line-height: 1.1;
+    }
+
+    .board-clock .clock-date {
+      font-size: clamp(11px, 1vw, 13px);
+      font-weight: 500;
+      color: var(--muted);
+    }
+
+    .venues-row {
+      display: flex;
+      gap: 14px;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .venue-card {
+      flex: 1 1 0;
+      min-width: 380px;
+      background: var(--panel-bg);
+      border: 1px solid var(--grid-line);
+      border-radius: 14px;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .venue-card-title {
+      flex: 0 0 auto;
+      padding: 9px 14px;
+      font-size: clamp(15px, 1.4vw, 19px);
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .venue-grid-scroll {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .venue-grid {
+      display: grid;
+      grid-template-columns: 46px repeat(7, 1fr);
+    }
+
+    .day-head {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background: var(--header-bg);
+      border-bottom: 1px solid var(--grid-line);
+      border-left: 1px solid var(--grid-line);
+      text-align: center;
+      padding: 5px 2px;
+      font-size: clamp(10px, 0.9vw, 12px);
+      font-weight: 600;
+    }
+
+    .day-head.corner {
+      border-left: none;
+    }
+
+    .day-head.is-today {
+      background: var(--today-tint);
+      color: var(--accent-dark);
+    }
+
+    .day-head .wd {
+      display: block;
+    }
+
+    .day-head .dt {
+      display: block;
+      font-weight: 400;
+      color: var(--muted);
+      font-size: 0.85em;
+    }
+
+    .day-head.is-today .dt {
+      color: var(--accent-dark);
+    }
+
+    .time-gutter-cell {
+      position: relative;
+      border-left: none;
+    }
+
+    .time-label {
+      position: absolute;
+      right: 4px;
+      transform: translateY(-50%);
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .day-col {
+      position: relative;
+      border-left: 1px solid var(--grid-line);
+      background-image:
+        repeating-linear-gradient(to bottom, var(--grid-line) 0, var(--grid-line) 1px, transparent 1px, transparent var(--hour-h)),
+        repeating-linear-gradient(to bottom, var(--grid-line-soft) 0, var(--grid-line-soft) 1px, transparent 1px, transparent var(--half-h));
+    }
+
+    .day-col.is-today {
+      background-color: var(--today-tint);
+    }
+
+    .day-col.has-special {
+      background-color: var(--special-tint);
+    }
+
+    .special-badge {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      right: 2px;
+      z-index: 2;
+      font-size: 10px;
+      font-weight: 700;
+      text-align: center;
+      padding: 1px 3px;
+      border-radius: 4px;
+      background: var(--special-badge);
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .event-block {
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      border-radius: 5px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10.5px;
+      line-height: 1.25;
+      padding: 2px 4px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    }
+
+    .event-block .ev-title {
+      font-weight: 700;
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-block .ev-unit,
+    .event-block .ev-time {
+      display: block;
+      opacity: 0.9;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-block .ev-time {
+      font-size: 9.5px;
+      opacity: 0.85;
+    }
+
+    .now-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 0;
+      border-top: 2px solid var(--now-line);
+      z-index: 4;
+      pointer-events: none;
+    }
+
+    .now-line::before {
+      content: '';
+      position: absolute;
+      left: -4px;
+      top: -4px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--now-line);
+    }
+
+    .updated-note {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: right;
+      margin-top: 5px;
+      flex: 0 0 auto;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.92);
+      font-size: 18px;
+      z-index: 50;
+    }
+
+    .overlay.error {
+      color: #c0392b;
+    }
+
+    .overlay .detail {
+      font-size: 13px;
+      color: #8a8a8a;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* 细一点的滚动条（仅 WebKit 系浏览器生效） */
+    .venue-grid-scroll::-webkit-scrollbar,
+    .venues-row::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    .venue-grid-scroll::-webkit-scrollbar-thumb,
+    .venues-row::-webkit-scrollbar-thumb {
+      background: #c7ced9;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="board-wrap">
+    <div class="board-header">
+      <div class="board-title">
+        🏛️ 场地借用电视看板
+        <span class="sub" id="weekRangeLabel">载入中...</span>
+      </div>
+      <div class="board-clock">
+        <div class="clock-time" id="clockTime">--:--:--</div>
+        <div class="clock-date" id="clockDate">----年--月--日</div>
+      </div>
+    </div>
+
+    <div class="venues-row" id="venuesRow"></div>
+
+    <div class="updated-note" id="updatedNote"></div>
+  </div>
+
+  <div class="overlay" id="loadingOverlay">
+    <div>⏳ 正在读取场地借用资料...</div>
+  </div>
+  <div class="overlay error hidden" id="errorOverlay">
+    <div>⚠️ 读取失败，将自动重试...</div>
+    <div class="detail" id="errorDetail"></div>
+  </div>
+
+  <script>
+    // ====================================================================
+    // 📺 电视看板：大讲堂 / 大礼堂 / 伯才堂 专用周视图
+    // 跟一般的月历/周历不同，这里刻意把「日期」放成列、「时间」放成行
+    // （一般周视图是日期当列、时间当"行内的连续区块"垂直排列，概念上其实是一样的方向；
+    // 这里讲的对调是相对于 Table.html 矩阵总表：矩阵总表是场地当列、日期当行，
+    // 电视看板反过来是日期当列、时间当行，三个场地各自一张表并排显示）
+    // ====================================================================
+
+    const START_HOUR = 7;                // 看板显示的开始时间 07:00
+    const END_HOUR = 22;                 // 看板显示的结束时间 22:00
+    const SLOT_MINUTES = 30;             // 每一行代表 30 分钟
+    const SLOT_COUNT = (END_HOUR - START_HOUR) * 60 / SLOT_MINUTES; // 30 行
+    const ROW_H = 24;                    // 每行(30分钟)的像素高度
+    const HOUR_H = ROW_H * 2;            // 每小时(2行)的像素高度
+    const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']; // 对齐 days[0..6] = 周一~周日
+    const REFRESH_MS = 5 * 60 * 1000;    // 每 5 分钟重新向后端要一次资料
+    const RELOAD_MS = 6 * 60 * 60 * 1000; // 每 6 小时整页重新载入一次，避免电视长时间开机后网页卡住/占用内存
+
+    let boardData = null;
+    let retryTimer = null;
+
+    function escapeHtml(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    function timeStrToMinutes(hhmm) {
+      if (!hhmm) return null;
+      const parts = String(hhmm).split(':');
+      if (parts.length < 2) return null;
+      const h = Number(parts[0]), m = Number(parts[1]);
+      if (isNaN(h) || isNaN(m)) return null;
+      return h * 60 + m;
+    }
+
+    // 把「一天里的第几分钟」换算成格子里的像素高度（超出 07:00~22:00 范围的会被夹住，
+    // 避免万一有场地借用时间落在这个区间之外时把版面撑坏）
+    function minutesToTopPx(mins) {
+      const clamped = Math.max(START_HOUR * 60, Math.min(END_HOUR * 60, mins));
+      return ((clamped - START_HOUR * 60) / SLOT_MINUTES) * ROW_H;
+    }
+
+    function pickTextColorForBg(hex) {
+      // 场地编号表里管理员手动上的底色深浅不一，简单算个亮度决定用白字还是深色字，
+      // 避免例如亮黄色底配白字看不清楚
+      const c = String(hex || '').replace('#', '');
+      if (c.length !== 6) return '#ffffff';
+      const r = parseInt(c.substr(0, 2), 16), g = parseInt(c.substr(2, 2), 16), b = parseInt(c.substr(4, 2), 16);
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      return luma > 170 ? '#1f2733' : '#ffffff';
+    }
+
+    function renderClock() {
+      const now = new Date();
+      document.getElementById('clockTime').textContent =
+        pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds());
+      document.getElementById('clockDate').textContent =
+        now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日 星期' +
+        ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
+    }
+
+    function todayISO() {
+      const now = new Date();
+      return now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
+    }
+
+    function makeCornerHead() {
+      const el = document.createElement('div');
+      el.className = 'day-head corner';
+      return el;
+    }
+
+    function makeDayHead(dateStr, isToday) {
+      const parts = dateStr.split('-');
+      const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      const el = document.createElement('div');
+      el.className = 'day-head' + (isToday ? ' is-today' : '');
+      el.innerHTML =
+        '<span class="wd">星期' + WEEKDAY_LABELS[(d.getDay() + 6) % 7] + '</span>' +
+        '<span class="dt">' + Number(parts[1]) + '/' + Number(parts[2]) + '</span>';
+      return el;
+    }
+
+    function makeTimeGutter(bodyHeight) {
+      const el = document.createElement('div');
+      el.className = 'time-gutter-cell';
+      el.style.height = bodyHeight + 'px';
+      // 只在整点画文字标签，半点只留格线不放字，看起来比较干净、也够看半小时的精度
+      for (let h = START_HOUR; h <= END_HOUR; h++) {
+        const label = document.createElement('div');
+        label.className = 'time-label';
+        label.style.top = minutesToTopPx(h * 60) + 'px';
+        // 🩹 文字预设用 translateY(-50%) 让文字垂直居中在整点线上，但最顶（07:00）跟
+        // 最底（22:00）那两个刚好落在容器的 top:0 / bottom 边界，居中会让文字有一半
+        // 超出容器范围、被 overflow 裁掉一半——所以这两个特别处理：贴着容器边缘往
+        // 内写，不居中，其余整点标签维持原本置中的写法不变。
+        if (h === START_HOUR) {
+          label.style.transform = 'translateY(0)';
+        } else if (h === END_HOUR) {
+          label.style.transform = 'translateY(-100%)';
+        }
+        label.textContent = pad2(h) + ':00';
+        el.appendChild(label);
+      }
+      return el;
+    }
+
+    function renderVenueCard(venue, data, todayStr) {
+      const card = document.createElement('div');
+      card.className = 'venue-card';
+
+      const title = document.createElement('div');
+      title.className = 'venue-card-title';
+      title.textContent = venue.name || venue.code;
+      title.title = venue.name || venue.code;
+      card.appendChild(title);
+
+      const scrollWrap = document.createElement('div');
+      scrollWrap.className = 'venue-grid-scroll';
+
+      const grid = document.createElement('div');
+      grid.className = 'venue-grid';
+      grid.style.setProperty('--hour-h', HOUR_H + 'px');
+      grid.style.setProperty('--half-h', ROW_H + 'px');
+
+      // 表头：左上角空白 + 7 天
+      grid.appendChild(makeCornerHead());
+      data.days.forEach(function (dateStr) {
+        grid.appendChild(makeDayHead(dateStr, dateStr === todayStr));
+      });
+
+      // 时间轴 + 7 天的格子区，每一列都一样高：SLOT_COUNT * ROW_H
+      const bodyHeight = SLOT_COUNT * ROW_H;
+      grid.appendChild(makeTimeGutter(bodyHeight));
+
+      const venueRecords = data.records.filter(function (r) { return r['场地'] === venue.code; });
+      const venueSpecial = data.specialStatus.filter(function (s) { return s.venueCode === venue.code; });
+
+      data.days.forEach(function (dateStr) {
+        const dayCol = document.createElement('div');
+        dayCol.className = 'day-col' + (dateStr === todayStr ? ' is-today' : '');
+        dayCol.style.height = bodyHeight + 'px';
+        dayCol.dataset.date = dateStr;
+
+        // 🚧 特殊状态（维修/考试场地/不外借...）：整栏底色提示 + 顶部小标签，
+        // 跟一般借用记录分开储存显示，两者互不影响、可以同时出现
+        const specialToday = venueSpecial.filter(function (s) { return s.date === dateStr; });
+        if (specialToday.length > 0) {
+          dayCol.classList.add('has-special');
+          const badge = document.createElement('div');
+          badge.className = 'special-badge';
+          const statusText = specialToday.map(function (s) { return s.status; }).join(' / ');
+          badge.textContent = '🚧 ' + statusText;
+          badge.title = statusText;
+          dayCol.appendChild(badge);
+        }
+
+        const dayRecords = venueRecords.filter(function (r) { return r['使用日期'] === dateStr; });
+        dayRecords.forEach(function (rec) {
+          const startMin = timeStrToMinutes(rec['时间(开始)']);
+          const endMin = timeStrToMinutes(rec['时间(结束)']);
+          if (startMin === null || endMin === null || endMin <= startMin) return;
+
+          const top = minutesToTopPx(startMin);
+          const bottom = minutesToTopPx(endMin);
+          const height = Math.max(bottom - top, 13);
+
+          const block = document.createElement('div');
+          block.className = 'event-block';
+          block.style.top = top + 'px';
+          block.style.height = height + 'px';
+
+          const unitColorEntry = (data.unitColors || []).find(function (u) { return u.unit === rec['单位']; });
+          if (unitColorEntry && unitColorEntry.color) {
+            block.style.background = unitColorEntry.color;
+            block.style.color = pickTextColorForBg(unitColorEntry.color);
+          }
+
+          block.title = (rec['活动'] || '') + '｜' + (rec['单位'] || '') + '｜' +
+            (rec['时间(开始)'] || '') + '-' + (rec['时间(结束)'] || '') + '｜' + (rec['填写人'] || '');
+
+          let inner = '<span class="ev-title">' + escapeHtml(rec['活动']) + '</span>';
+          if (height >= 28) inner += '<span class="ev-unit">' + escapeHtml(rec['单位']) + '</span>';
+          if (height >= 40) inner += '<span class="ev-time">' + escapeHtml(rec['时间(开始)']) + '-' + escapeHtml(rec['时间(结束)']) + '</span>';
+          block.innerHTML = inner;
+
+          dayCol.appendChild(block);
+        });
+
+        grid.appendChild(dayCol);
+      });
+
+      scrollWrap.appendChild(grid);
+      card.appendChild(scrollWrap);
+      return card;
+    }
+
+    function updateNowLines() {
+      document.querySelectorAll('.now-line').forEach(function (el) { el.remove(); });
+      if (!boardData) return;
+      const now = new Date();
+      const todayStr = todayISO();
+      if (todayStr < boardData.weekStart || todayStr > boardData.weekEnd) return;
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      if (nowMin < START_HOUR * 60 || nowMin > END_HOUR * 60) return;
+      const top = minutesToTopPx(nowMin);
+      document.querySelectorAll('.day-col.is-today').forEach(function (col) {
+        const line = document.createElement('div');
+        line.className = 'now-line';
+        line.style.top = top + 'px';
+        col.appendChild(line);
+      });
+    }
+
+    function renderBoard(data) {
+      boardData = data;
+      const todayStr = todayISO();
+
+      const ws = data.weekStart.split('-'), we = data.weekEnd.split('-');
+      document.getElementById('weekRangeLabel').textContent =
+        '本周 ' + pad2(ws[2]) + '/' + pad2(ws[1]) + '/' + ws[0] + '-' + pad2(we[2]) + '/' + pad2(we[1]) + '/' + we[0];
+
+      const container = document.getElementById('venuesRow');
+      container.innerHTML = '';
+      data.venues.forEach(function (venue) {
+        container.appendChild(renderVenueCard(venue, data, todayStr));
+      });
+
+      const now = new Date();
+      document.getElementById('updatedNote').textContent =
+        '最后更新：' + pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds());
+
+      document.getElementById('loadingOverlay').classList.add('hidden');
+      document.getElementById('errorOverlay').classList.add('hidden');
+
+      updateNowLines();
+    }
+
+    function loadBoardData() {
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      google.script.run
+        .withSuccessHandler(function (data) {
+          renderBoard(data);
+        })
+        .withFailureHandler(function (err) {
+          // 🛡️ 电视看板不会有人在场手动重试，读取失败就先保留上一次画面（如果有的话），
+          // 只在完全没资料时才盖上错误提示，并且过一段时间自动再试一次
+          if (!boardData) {
+            document.getElementById('errorOverlay').classList.remove('hidden');
+            document.getElementById('errorDetail').textContent = (err && err.message) ? err.message : String(err);
+          }
+          retryTimer = setTimeout(loadBoardData, 60 * 1000);
+        })
+        .getTvBoardWeekData();
+    }
+
+    renderClock();
+    setInterval(renderClock, 1000);
+    setInterval(updateNowLines, 30 * 1000);
+
+    loadBoardData();
+    setInterval(loadBoardData, REFRESH_MS);
+    setTimeout(function () { location.reload(); }, RELOAD_MS);
+  </script>
+</body>
+
+</html>

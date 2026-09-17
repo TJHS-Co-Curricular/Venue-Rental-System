@@ -91,6 +91,13 @@
             gap: 8px;
         }
 
+        /* 🆕 表格 + 右侧公告栏并排显示的容器 */
+        .content-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
         .excel-table-wrapper {
             max-height: 78vh;
             overflow: auto;
@@ -98,6 +105,128 @@
             border-radius: 12px;
             box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
             background: var(--panel-bg);
+            /* 🔧 原本靠 .matrix-table { width: 50% } 让表格只占容器一半宽度，右边留白。
+               现在右边留白要放公告栏，改成在这一层（wrapper）固定占比，
+               .matrix-table 改回 100%（填满自己的 wrapper）。表格 70% / 公告栏 30%，
+               公告栏那边的 .announcement-panel 用 flex: 1 1 0 吃剩下的空间，两边比例改这里就够了，
+               不用去动 .announcement-panel */
+            width: 70%;
+            flex: 0 0 70%;
+        }
+
+        /* 📢 公告栏：内容来自指定的 Google 文档（见 Code.gs 的 getAnnouncementHtml()），
+           管理员之后只要编辑那份 Google 文档，这里会在页面重新整理/定期刷新时自动跟着更新，
+           不需要碰任何代码 */
+        .announcement-panel {
+            flex: 1 1 0;
+            min-width: 260px;
+            max-height: 78vh;
+            overflow-y: auto;
+            border: 1px solid var(--grid-line);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+            background: var(--panel-bg);
+            padding: 16px 20px;
+        }
+
+        .announcement-panel::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .announcement-panel::-webkit-scrollbar-thumb {
+            background: #c7ced9;
+            border-radius: 6px;
+        }
+
+        .announcement-header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--grid-line);
+        }
+
+        .announcement-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--ink);
+            white-space: nowrap;
+        }
+
+        .announcement-updated {
+            font-size: 11.5px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .announcement-body {
+            font-size: 14px;
+            line-height: 1.7;
+            color: var(--ink);
+            word-break: break-word;
+        }
+
+        .announcement-body h2,
+        .announcement-body h3,
+        .announcement-body h4,
+        .announcement-body h5 {
+            margin: 0.6em 0 0.35em;
+            font-weight: 700;
+            color: var(--accent-dark);
+        }
+
+        .announcement-body h2 {
+            font-size: 20px;
+        }
+
+        .announcement-body h3 {
+            font-size: 17px;
+        }
+
+        .announcement-body h4 {
+            font-size: 15.5px;
+        }
+
+        .announcement-body h5 {
+            font-size: 14.5px;
+        }
+
+        .announcement-body p {
+            margin: 0 0 0.7em;
+        }
+
+        .announcement-body p.ann-blank {
+            margin: 0 0 0.3em;
+            line-height: 0.6;
+        }
+
+        .announcement-body ul,
+        .announcement-body ol {
+            margin: 0 0 0.7em;
+            padding-left: 22px;
+        }
+
+        .announcement-body li {
+            margin-bottom: 0.25em;
+        }
+
+        .announcement-body a {
+            color: var(--accent);
+            text-decoration: underline;
+        }
+
+        .announcement-body .ann-empty,
+        .announcement-body .ann-error {
+            color: var(--muted);
+            font-size: 13px;
+            text-align: center;
+            padding: 30px 10px;
+        }
+
+        .announcement-body .ann-error {
+            color: #c0392b;
         }
 
         /* 细一点、圆角的滚动条（仅 WebKit 系浏览器生效，其他浏览器会退回默认样式，不影响功能） */
@@ -116,7 +245,7 @@
         }
 
         .matrix-table {
-            width: 50%;
+            width: 100%;
             border-collapse: collapse;
             font-size: 16px;
             background: var(--panel-bg);
@@ -158,21 +287,20 @@
             left: 0;
             background-color: #fafbfd !important;
             z-index: 11;
-            min-width: 65px;
+            min-width: 50px;
             font-weight: 600;
             box-shadow: 2px 0 4px rgba(15, 23, 42, 0.05);
         }
 
         .sticky-left-2 {
             position: sticky;
-            left: 65px;
+            left: 30px;
             background-color: #fafbfd !important;
             z-index: 11;
             /* 🔧 班级名称太长会把这一列撑得很宽，改成固定宽度 + 超出省略号，
                鼠标移上去用 title 属性显示完整名称（见 renderMatrix() 里的 title="..."） */
-            width: 250px;
-            min-width: 250px;
-            max-width: 250px;
+            min-width: 100px;
+            max-width: 150px;
             overflow: hidden;
             text-overflow: ellipsis;
             text-align: left !important;
@@ -274,6 +402,17 @@
                 flex-direction: column;
                 align-items: stretch !important;
             }
+
+            .content-row {
+                flex-direction: column;
+            }
+
+            .excel-table-wrapper,
+            .announcement-panel {
+                width: 100%;
+                flex: 1 1 auto;
+                max-height: none;
+            }
         }
     </style>
 </head>
@@ -311,13 +450,23 @@
             <div class="legend-chips" id="specialStatusLegendChips" style="flex:1 1 auto;"></div>
         </div>
 
-        <div class="excel-table-wrapper">
-            <table class="matrix-table" id="matrixTable">
-                <thead>
-                    <tr id="theadRow"></tr>
-                </thead>
-                <tbody id="tbodyRows"></tbody>
-            </table>
+        <div class="content-row">
+            <div class="excel-table-wrapper">
+                <table class="matrix-table" id="matrixTable">
+                    <thead>
+                        <tr id="theadRow"></tr>
+                    </thead>
+                    <tbody id="tbodyRows"></tbody>
+                </table>
+            </div>
+
+            <div class="announcement-panel" id="announcementPanel">
+                <div class="announcement-header">
+                    <span class="announcement-title">📢 公告栏</span>
+                    <span class="announcement-updated" id="announcementUpdated"></span>
+                </div>
+                <div class="announcement-body" id="announcementBody">载入中...</div>
+            </div>
         </div>
     </div>
 
@@ -413,7 +562,49 @@
             // ⚡ 性能优化：总表一次只看一个月，改成只拉当前所选月份的数据，
             // 不再是每次打开都把系统里所有历史月份的记录一次性全部读出来
             loadRecordsForSelectedMonth(() => checkAndRender(++loadCounter));
+
+            // 📢 公告栏是独立的一块内容，跟矩阵表格的加载互不影响、不用等彼此，
+            // 所以不用挤进 TOTAL_LOADS 那个计数器，单独载入即可。
+            loadAnnouncement();
+            // 页面通常会开着让人一直看，公告文档改了之后，不用重新整理网页也能在几分钟内自动跟上
+            setInterval(loadAnnouncement, 5 * 60 * 1000);
         });
+
+        // 📢 读取右侧公告栏内容（来源：Code.gs 的 getAnnouncementHtml()，读取指定的 Google 文档）
+        function loadAnnouncement() {
+            google.script.run
+                .withSuccessHandler(renderAnnouncement)
+                .withFailureHandler(function (err) {
+                    document.getElementById('announcementBody').innerHTML =
+                        '<div class="ann-error">⚠️ 公告栏读取失败：' + escapeHtml(err && err.message ? err.message : String(
+                            err)) + '</div>';
+                    document.getElementById('announcementUpdated').textContent = '';
+                })
+                .getAnnouncementHtml();
+        }
+
+        function renderAnnouncement(data) {
+            const bodyEl = document.getElementById('announcementBody');
+            const updatedEl = document.getElementById('announcementUpdated');
+
+            if (!data || !data.configured) {
+                bodyEl.innerHTML =
+                    '<div class="ann-empty">尚未设置公告文档<br>（在 Code.gs 的 ANNOUNCEMENT_DOC_ID 填上 Google 文档 ID 即可启用）</div>';
+                updatedEl.textContent = '';
+                return;
+            }
+            if (data.error) {
+                bodyEl.innerHTML = '<div class="ann-error">⚠️ 读取公告文档失败：' + escapeHtml(data.error) + '</div>';
+                updatedEl.textContent = '';
+                return;
+            }
+            // ⚠️ data.html 是后端 docBodyToHtml() 从 Google 文档内容转换出来的 HTML，
+            // 文字部分已经在后端做过 escapeHtml，这里可以直接信任、放进 innerHTML
+            bodyEl.innerHTML = (data.html && data.html.trim()) ?
+                data.html :
+                '<div class="ann-empty">（公告文档目前是空的）</div>';
+            updatedEl.textContent = data.updated ? ('文档更新于 ' + data.updated) : '';
+        }
 
         function checkAndRender(counter) {
             if (counter === TOTAL_LOADS) {

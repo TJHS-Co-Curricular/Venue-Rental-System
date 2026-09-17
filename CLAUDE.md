@@ -128,7 +128,7 @@ J: 系统时间戳      yyyy-MM-dd HH:mm:ss，同一次提交（连续多天/多
 ## 前端要点
 
 ### Admin.html（管理端）
-- 场地用可搜索/可按栋号（编号首字母）过滤的多选方块 UI（`venue-tile`），编辑模式下强制单选（`isEditMode`），避免多选后其余场地被后端悄悄丢弃。
+- 场地用可搜索/可按栋号过滤的多选方块 UI（`venue-tile`），编辑模式下强制单选（`isEditMode`），避免多选后其余场地被后端悄悄丢弃。楼栋分组按钮固定为「全部 / 大栋 / B栋 / C栋 / D栋 / F栋 / 其他」（`getBlockGroupKey()`），不再像早期版本那样动态扫描场地编号有哪些字母就生成哪些按钮。其中「大栋」**不是**字母楼栋，是专门给三个核心集会场所（大讲堂、大礼堂、伯才堂）的分组——这三个场地的《场地编号》栏位本身存的就是中文名字而不是字母+数字编号，靠 `MAJOR_HALL_NAMES` 数组用文字包含比对（`code.includes(...) || name.includes(...)`）来认；其余场地照编号首字母判断 B/C/D/F 各归各栋，两边都没匹配到的（例如以后新增了 A/E/G 开头的编号，或场地编号本身不是这个规则）一律落到「其他」。
 - 借用时间是两个独立 `<input type="time">`（24 小时制），不再是自由文本。
 - "填写日期"自动锁定为当天、只读。
 - "同批"按钮（`selectSameBatch`）：靠共享的"系统时间戳"一键勾选同一次提交的所有记录，方便整批删除/重建。
@@ -145,6 +145,12 @@ J: 系统时间戳      yyyy-MM-dd HH:mm:ss，同一次提交（连续多天/多
 - 单位颜色：读取 `getUnitColorMap()`（**返回按表格原始顺序排列的数组，不是物件**——这是刻意的，因为 JS 物件的整数形态键名如 `"10"` 会被引擎按数字重新排序、打乱原本表格顺序，改用数组 + `Map` 才能保证图例顺序跟《场地编号》表格一致）。同一格如果涉及多个不同单位（同场地同天但时段不重叠的多笔借用），用斜向渐层同时显示每个单位的颜色。
 - 顶部有一行"🏢 行政单位："图例，只列出真的有上色、且不是学会团体编号的单位。
 - 🚧 特殊状态叠加显示（内框 + 右上角图示 + "🚧 特殊状态："图例行），详见上方《特殊状态》工作表一节的"前端整合"部分。
+- **📢 右侧公告栏**：`.content-row` 是新增的 flex 容器，把原本占满整行的 `.excel-table-wrapper` 和新的 `.announcement-panel` 并排放在一起。这里有个容易忽略的历史包袱——早期有个需求是把 `.matrix-table { width: 50% }` 设成固定 50% 宽度（纯粹为了让表格看起来不要太宽），刚好留出右边一半空白；这次新增公告栏时，把"表格占一半"这件事从 `.matrix-table` 移到了它的父层 `.excel-table-wrapper`（`width: 50%; flex: 0 0 50%`），`.matrix-table` 本身改回 `width: 100%`（填满自己的 wrapper），视觉结果跟改之前一模一样，只是空出来的右边现在真的塞了一个 flex 兄弟元素（`.announcement-panel`，`flex: 1 1 0`）可以用，而不是纯粹的空白。窄屏（`max-width: 640px`）会改成上下堆叠、两者都变回 100% 宽度。
+  - 数据来源：`Code.gs` 的 `getAnnouncementHtml()`，读取一份**指定的 Google 文档**（不是 Google Sheets 也不是 .docx，是原生 Google 文档），文档 ID 写死在 `Code.gs` 的 `ANNOUNCEMENT_DOC_ID` 常量里，管理员之后只要编辑那份 Google 文档内容，不用碰任何代码或重新部署——`Table.html` 打开时会读一次，之后每 5 分钟 (`setInterval`) 自动再读一次，让开着不关的分页也能跟上更新。
+  - 转换逻辑 `docBodyToHtml()`：遍历 `DocumentApp` 文档 Body 的段落（`PARAGRAPH`）和条列项（`LIST_ITEM`），标题样式（`TITLE`/`HEADING1`~`HEADING6`/`SUBTITLE`）映射成对应的 `<h2>`~`<h5>`，一般段落是 `<p>`，条列项依 `getGlyphType()` 是 `NUMBER` 还是其他归类成 `<ol>`/`<ul>` 并自动合并连续同类型的条列项成同一个清单；文字层级的粗体/斜体/底线/前景色/背景色/超链接靠 `Text.getTextAttributeIndices()` 抓出属性变化的切段点，每一段各自查 `isBold()`/`isItalic()`/`isUnderline()`/`getForegroundColor()`/`getBackgroundColor()`/`getLinkUrl()`（都吃一个字符偏移量参数）后包上对应标签，文字本身一律先过 `escapeHtmlDoc()`（这个文件自己的escape函数，独立于 Table.html 前端的 `escapeHtml()`）才拼进 HTML，避免公告文档里如果不小心打了 `<`/`>`/`&` 之类的字符把版面弄坏。**图片、表格、分隔线等元素类型目前直接跳过不处理**——公告用不太到，真的需要再另外扩充。
+  - `getAnnouncementHtml()` 整个包在 `try/catch` 里，`ANNOUNCEMENT_DOC_ID` 没填、文档被删、或执行者的账号没有查看权限，都不会让矩阵总表其他部分挂掉，只会在公告栏本身显示"尚未设置"或错误信息（`{configured, html, updated, error?}` 这个返回形状，前端 `renderAnnouncement()` 依 `configured`/`error`/`html` 是否有值分三种情况显示）。
+  - **权限**：`DocumentApp`/`DriveApp` 都是 Apps Script 的**内建服务**（跟 `SpreadsheetApp`/`Session` 同一类），不是像 People API 那样的"进阶服务"，不需要在 `appsscript.json` 的 `enabledAdvancedServices` 里额外声明。因为 `?page=table` 走的也是 `executeAs: USER_DEPLOYING`（脚本拥有者身份执行，见下方《权限模型》一节），只要脚本拥有者自己的 Google 账号能打开那份公告文档，所有访客都能看到公告内容，不需要额外把文档分享给每个访客。项目目前没有声明任何 `oauthScopes`（沿用自动侦测）。
+  - **⚠️ 授权坑点（重要，跟上面那句"属于正常行为"的旧描述相反）**：Apps Script 平常确实会在代码新增用到某个服务时自动侦测新增的权限范围，但**前提是执行环境本身能跳出互动式授权画面**。已经部署好的网页应用（`doGet` 这条执行路径）是**非互动式**执行环境，遇到脚本尚未被授权过的权限范围（例如这次新增的 `https://www.googleapis.com/auth/documents`）时，不会跳出授权视窗，而是直接抛出类似 `您没有调用 DocumentApp.openById 的权限` 的错误、直接失败——即使脚本之前已经因为别的服务（例如 `SpreadsheetApp`）被授权过一次也一样，旧授权不会自动涵盖新增的权限范围。解法是**在 Apps Script 编辑器里手动跑一次会用到新服务的函数**（编辑器本身是互动环境，能跳出授权画面），项目里为此专门准备了 `authorizeAnnouncementDocAccess()` 这个函数（就是包了一层的 `getAnnouncementHtml()`），管理员只要在编辑器函数下拉选单选中它、点「运行」，跳出的 Google 权限确认视窗允许一次即可——因为执行身份是同一个 Google 账号（脚本拥有者），这次编辑器里的授权结果，已经部署好的网页应用（`executeAs: USER_DEPLOYING`）会直接沿用，**不需要重新部署新版本**。以后如果又新增了别的内建服务（例如 `CalendarApp`），同样的坑会再发生一次，一样的解法：写一个类似的一次性授权函数、在编辑器里手动跑一次。
 
 ### Viewver.html（公众日历视图）
 - 用 FullCalendar 渲染，时间来自兼容层拼出的 `item.时间`（组合字符串），前端自己用正则从中提取开始/结束时间转成 ISO 时间给日历用。
@@ -152,6 +158,18 @@ J: 系统时间戳      yyyy-MM-dd HH:mm:ss，同一次提交（连续多天/多
 - 同样接了 `getUnitColorMap()`，日历事件会按行政单位底色着色（`buildEventsFromRecords()` 里设 `backgroundColor`/`borderColor`，并用 `pickReadableTextColor()` 依亮度自动挑深色/白色文字），学会团体（无颜色映射）维持默认样式；日历上方有对应的"🏢 行政单位："图例。
 - 数据改用 `readRecordsForRange()`（见上方性能优化要点），不再是打开页面就读全部历史记录。
 - 🚧 特殊状态标记转成全天事件叠加显示，详见上方《特殊状态》工作表一节的"前端整合"部分。
+
+### TVBoard.html（电视看板）
+- 专给大讲堂 / 大礼堂 / 伯才堂三个核心场所用，设计上刻意跟 `Table.html` 矩阵总表反方向：`Table.html` 是场地当行、日期当列；`TVBoard.html` 是日期当列、时间当行（07:00–22:00，每 30 分钟一格，`START_HOUR`/`END_HOUR`/`SLOT_MINUTES`/`ROW_H` 几个常量控制），三个场地各自一张表并排显示（`.venues-row` flex 横排，横向空间不够时整排可以横向滚动，`min-width` 保底避免挤爆）。
+- 数据来源是后端专属的 `getTvBoardWeekData()`（`Code.gs`），一次把「当周」（周一～周日，服务器用 `Session.getScriptTimeZone()` 的今天算出本周一）三个场地要用到的东西全包好回传：`days`（7 个 ISO 日期）、`venues`（固定顺序：大讲堂/大礼堂/伯才堂）、`records`（`readRecordsForRange()` 结果按场地过滤）、`specialStatus`（`readSpecialStatusForRange()` 结果按场地过滤）、`unitColors`（`getUnitColorMap()`）。前端不用自己拼日期区间、也不用分好几次 RPC。
+- **`TV_BOARD_VENUE_NAMES`（`Code.gs`）和 `MAJOR_HALL_NAMES`（`Admin.html`）是同一份"大讲堂/大礼堂/伯才堂"名单的两份独立拷贝**——一个跑在服务器、一个跑在浏览器，Apps Script 没有让 `.gs` 和 `.html` 共用同一个 JS 常量的机制，只能各自维护一份、含义保持一致。以后这三个场地的名字有变动、或是要新增/移除电视看板要显示的场地，两边都要同步改，改一边忘了改另一边不会报错，只会出现"电视看板缺一个场地"或"大栋分类少算一个场地"这种不容易一眼看出来的行为落差。
+- 事件区块用**绝对定位**画在每个"日期列"里（`.day-col { position: relative }` + `.event-block { position: absolute; top/height 用 JS 算 }`），没有用 CSS Grid 的 `grid-row` 或 HTML `<table>` 的 `rowspan`——因为系统在写入借用记录前就已经用 `findVenueTimeConflict()` 卡住了同场地同时段重叠，所以同一个场地同一天的借用区块保证不会互相重叠，用绝对定位按分钟数直接换算像素高度（`minutesToTopPx()`）最简单可靠，不用处理"两个事件同时段要并排缩窄"这种一般日历视图才需要的复杂排版。
+- 时间标签只在整点画文字（`makeTimeGutter()`），半点只留格线不放字（`.day-col` 背景用两层 `repeating-linear-gradient` 分别画整点/半点的格线），兼顾"半小时精度"和"从电视机前面几公尺外一眼扫过不会太杂"。
+- 🚧 特殊状态在这里是"整栏底色 + 顶部小标签"（`.day-col.has-special` + `.special-badge`），跟一般借用记录（区块）分层叠加、互不覆盖，跟 `Table.html`/`Viewver.html` 的处理精神一致，但视觉呈现各自按自己的版面重新设计，不是照抄同一份 CSS。
+- 单位颜色沿用系统既有的 `getUnitColorMap()`（同一份数据也给 `Table.html`/`Viewver.html` 用），事件区块有对应颜色时用 `pickTextColorForBg()` 依亮度自动挑白字或深色字；没有手动上色的单位就用统一的默认蓝色，不会因为没上色而显示成难以辨识的样式。
+- **红线"现在时间"指示**（`.now-line`）：只画在"今天"那一列，每 30 秒重新计算一次位置（不用整个重新拉资料，纯前端算），落在 07:00–22:00 显示范围之外（例如半夜）就不画。
+- **专为无人值守的电视/显示器设计**：不需要登入（跟 `Table.html`/`Viewver.html` 一样公开访问）、没有任何需要手动点击的操作；资料每 5 分钟自动透过 `google.script.run` 重新拉一次（`REFRESH_MS`），失败的话不会让画面死掉——如果是第一次载入就失败才整页盖一层错误提示，如果是"已经有画面、只是这次刷新失败"就保留原本画面、静默重试（`loadBoardData()` 的 `withFailureHandler`），1 分钟后再试一次；另外每 6 小时会整页 `location.reload()` 一次（`RELOAD_MS`），避免电视长时间开机、页面常驻内存/连线状态累积出问题却没有人在现场重开。
+- 路由：`Code.gs` 的 `doGet()` 里 `?page=tv` 对应这个文件，跟 `view`/`table` 一样不做白名单拦截（对齐"公众页面公开、只有 admin 需要登入"的既有权限设计）。
 
 ## 定期清理（Cleanup.gs）
 

@@ -380,6 +380,32 @@
     let globalSelectedVenues = new Set();
     let activeBlockFilter = 'ALL';
     let activeSearchQuery = '';
+    // 🏢 楼栋分组固定为这几组：
+    // - 「大栋」不是字母楼栋，是三个核心集会场所专用分组：大讲堂 / 大礼堂 / 伯才堂
+    //   （这三个场地的《场地编号》栏位本身存的就是中文名字，不是字母+数字的编号）
+    // - 场地编号第一个字母是 B/C/D/F 的，各自归到对应字母栋
+    // - 除此之外（大栋三个场地以外、又不是 B/C/D/F 开头的任何场地）一律归到「其他」
+    // 不再像以前那样动态扫描场地编号有哪些字母就生成哪些按钮。
+    const MAJOR_HALL_NAMES = ['大讲堂', '大礼堂', '伯才堂'];
+    const LETTER_BLOCK_LABELS = {
+      'B': 'B栋',
+      'C': 'C栋',
+      'D': 'D栋',
+      'F': 'F栋'
+    };
+    const BLOCK_GROUP_LABELS = {
+      'MAJOR': '大栋',
+      ...LETTER_BLOCK_LABELS
+    };
+    const BLOCK_GROUP_ORDER = ['MAJOR', 'B', 'C', 'D', 'F', 'OTHER'];
+
+    function getBlockGroupKey(codeStr, nameStr) {
+      const code = String(codeStr || '').trim();
+      const name = String(nameStr || '').trim();
+      if (MAJOR_HALL_NAMES.some(n => code.includes(n) || name.includes(n))) return 'MAJOR';
+      const ch = code.charAt(0).toUpperCase();
+      return Object.prototype.hasOwnProperty.call(LETTER_BLOCK_LABELS, ch) ? ch : 'OTHER';
+    }
     let isEditMode = false; // 🛡️ 编辑模式标记：编辑时场地只能单选，避免多选后其余场地被后端悄悄丢弃
     let currentPage = 1; // 🆕 分页：借用记录列表当前显示第几页
     let pageSize = 8; // 🆕 分页：每页显示笔数，使用者可在 8 / 16 / 32 之间选择（依屏幕大小自行调整）
@@ -672,11 +698,9 @@
           const tableVenueFilter = document.getElementById('tableVenueFilter');
           tableVenueFilter.innerHTML = '<option value="">🏛️ 查看所有场地</option>';
 
-          const blockSet = new Set();
           venueOptions.forEach(v => {
             const code = String(v.code || '').trim();
             if (code) {
-              blockSet.add(code.charAt(0).toUpperCase());
               const option = document.createElement('option');
               option.value = code;
               option.textContent = v.name && v.name !== code ? `${code} - ${v.name}` : code;
@@ -687,9 +711,10 @@
           const filterContainer = document.getElementById('venueBlockGroupFilters');
           filterContainer.innerHTML =
             '<button type="button" class="btn btn-outline-primary btn-xs active" id="btnBlock_ALL" onclick="handleBlockFilterChange(\'ALL\')">全部</button>';
-          Array.from(blockSet).sort().forEach(b => {
+          BLOCK_GROUP_ORDER.forEach(key => {
+            const label = key === 'OTHER' ? '其它' : BLOCK_GROUP_LABELS[key];
             filterContainer.innerHTML +=
-              `<button type="button" class="btn btn-outline-primary btn-xs" id="btnBlock_${b}" onclick="handleBlockFilterChange('${b}')">${b}栋</button>`;
+              `<button type="button" class="btn btn-outline-primary btn-xs" id="btnBlock_${key}" onclick="handleBlockFilterChange('${key}')">${label}</button>`;
           });
 
           renderVenueGridTiles();
@@ -704,8 +729,8 @@
       const filteredVenues = venueOptions.filter(v => {
         const codeStr = String(v.code || '').trim();
         const nameStr = String(v.name || '').trim();
-        const blockChar = codeStr.charAt(0).toUpperCase();
-        return (activeBlockFilter === 'ALL' || blockChar === activeBlockFilter) &&
+        const blockKey = getBlockGroupKey(codeStr, nameStr);
+        return (activeBlockFilter === 'ALL' || blockKey === activeBlockFilter) &&
           (activeSearchQuery === '' || codeStr.toLowerCase().includes(activeSearchQuery) || nameStr.toLowerCase()
             .includes(activeSearchQuery));
       });
@@ -790,8 +815,8 @@
       return venueOptions.filter(v => {
         const codeStr = String(v.code || '').trim();
         const nameStr = String(v.name || '').trim();
-        const blockChar = codeStr.charAt(0).toUpperCase();
-        return (activeBlockFilter === 'ALL' || blockChar === activeBlockFilter) &&
+        const blockKey = getBlockGroupKey(codeStr, nameStr);
+        return (activeBlockFilter === 'ALL' || blockKey === activeBlockFilter) &&
           (activeSearchQuery === '' || codeStr.toLowerCase().includes(activeSearchQuery) || nameStr.toLowerCase()
             .includes(activeSearchQuery));
       });
