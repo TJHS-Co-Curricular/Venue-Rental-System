@@ -96,10 +96,291 @@ function requireAdminAccess() {
   return email;
 }
 
+// 🆕「填写人」留空时自动带出当前登入者的资料，格式："CHONG ZHI JIE 庄智杰 (zjchong@tsunjin.edu.my)"。
+// 显示名（People API 才拿得到，Session.getActiveUser() 本身只有 email、没有名字）来自 Google 账号
+// 自己的 People 资料，需要先在 Apps Script 编辑器左侧「服务 +」加上「Google People API」这个进阶服务
+// （一次性设置，见 README/CLAUDE.md）。没加这个服务、或者 API 呼叫失败（例如该账号没有设置过
+// 显示名），就自动退回只用 email，不会让整个提交失败。
+function getCurrentUserDisplayLabel(operatorEmail) {
+  const email = operatorEmail || Session.getActiveUser().getEmail() || '';
+  try {
+    if (typeof People !== 'undefined' && People.People && typeof People.People.get === 'function') {
+      const profile = People.People.get('people/me', { personFields: 'names' });
+      const displayName = profile && profile.names && profile.names.length > 0 ? profile.names[0].displayName : '';
+      if (displayName) {
+        return email ? `${displayName} (${email})` : displayName;
+      }
+    }
+  } catch (e) {
+    Logger.log('getCurrentUserDisplayLabel: 取不到 Google 账号显示名（可能还没加 People API 服务），改用 email 顶替。' + e.message);
+  }
+  return email || '未知使用者';
+}
+
 // 🆕 存储结构升级：原本「时间」是一个组合字符串栏位，现在拆成「时间(开始)」/「时间(结束)」两个独立栏位
 const HEADERS = ['ID', '场地', '活动', '单位', '时间(开始)', '时间(结束)', '填写人', '填写日期', '使用日期', '系统时间戳'];
 const TRASH_SHEET_NAME = '已删除记录(回收站)';
 const AUDIT_SHEET_NAME = '操作日志';
+
+// 🚧 场地"特殊状态"（例如"维修"/"考试场地"/"不外借"）：跟一般借用记录是完全独立的两回事——
+// 不占用时间段、不做冲突拦截，纯粹是"某场地在某天被标记成某种状态"，专门存在《特殊状态》这张表里。
+// 这张表一分为二用：
+//   A 列（从第 2 行开始）＝"状态类型定义区"：管理员手动列出可选的状态文字，并且可以手动
+//     帮那一格上底色——上色的逻辑跟"单位"列一模一样（getUnitColorMap() 那一套），色码就是
+//     图例/矩阵总表/日历显示时用的颜色。新增新的状态种类，直接在这一列多打一行文字即可，
+//     不需要改代码。
+//   C 列开始＝"标记记录区"：每次管理端提交"特殊状态"，就会在这里新增一行，记录是哪个场地、
+//     哪个状态、哪一天。C/D 两列刻意留了 B 列当视觉分隔，不会互相干扰。
+const SPECIAL_STATUS_SHEET_NAME = '特殊状态';
+const SPECIAL_STATUS_TYPE_HEADER = '状态类型（在这列手动列出，格子手动上色＝图例颜色）';
+const SPECIAL_STATUS_RECORD_START_COL = 3; // C 列开始放"标记记录"，跟 A 列的"状态类型定义"隔开（B 列留空当分隔）
+const SPECIAL_STATUS_RECORD_HEADERS = ['ID', '场地编号', '场地名称', '状态名称', '使用日期', '填写人', '填写日期', '系统时间戳'];
+
+// 取得《特殊状态》工作表，第一次使用时自动建立（含表头样式、范例状态、时间栏位防呆格式）
+function getOrCreateSpecialStatusSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SPECIAL_STATUS_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SPECIAL_STATUS_SHEET_NAME);
+    sheet.getRange(1, 1).setValue(SPECIAL_STATUS_TYPE_HEADER);
+    sheet.getRange(1, SPECIAL_STATUS_RECORD_START_COL, 1, SPECIAL_STATUS_RECORD_HEADERS.length).setValues([SPECIAL_STATUS_RECORD_HEADERS]);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, SPECIAL_STATUS_RECORD_START_COL + SPECIAL_STATUS_RECORD_HEADERS.length - 1).setFontWeight('bold');
+    sheet.setColumnWidth(1, 260);
+    // 🔧 防止"使用日期"/"填写日期"被 Google 表格自动识别转成 Date（跟其他表同样的坑点）
+    const useDateCol1 = SPECIAL_STATUS_RECORD_START_COL + SPECIAL_STATUS_RECORD_HEADERS.indexOf('使用日期');
+    const fillDateCol1 = SPECIAL_STATUS_RECORD_START_COL + SPECIAL_STATUS_RECORD_HEADERS.indexOf('填写日期');
+    sheet.getRange(2, useDateCol1, sheet.getMaxRows() - 1, 1).setNumberFormat('@');
+    sheet.getRange(2, fillDateCol1, sheet.getMaxRows() - 1, 1).setNumberFormat('@');
+    // 预先放几个常见范例，方便管理员上手（可以直接改文字/改颜色/删掉/新增更多行）
+    sheet.getRange(2, 1, 3, 1).setValues([['维修'], ['考试场地'], ['不外借']]);
+  }
+  return sheet;
+}
+
+// 🎨 读取 A 列的"状态类型定义"，逻辑跟 getUnitColorMap() 完全对应：按表格原始顺序、
+// 同名只取第一次出现的颜色、跳过默认白色/没上色的格子（回传空字串，前端会给预设样式）。
+// 跟 getUnitColorMap() 不同的地方：这里"没上色"的状态名称也要保留在清单里（回传 color:''），
+// 因为 Admin.html 的打勾清单需要显示所有可选状态，颜色只是拿来做图例/矩阵染色用。
+function getSpecialStatusesFromSheet() {
+  try {
+    const sheet = getOrCreateSpecialStatusSheet();
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return [];
+    const values = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    const backgrounds = sheet.getRange(2, 1, lastRow - 1, 1).getBackgrounds();
+    const seen = new Set();
+    const list = [];
+    for (let i = 0; i < values.length; i++) {
+      const name = String(values[i][0] || '').trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const color = String(backgrounds[i][0] || '').toLowerCase();
+      list.push({ name: name, color: (!color || color === '#ffffff') ? '' : color });
+    }
+    return list;
+  } catch(err) { return []; }
+}
+
+// 🚧 新增特殊状态标记：跟 createRecord() 共用同一套「日期区间 + 可选按星期重复」的日期展开逻辑，
+// 但完全不检查场地时段冲突（特殊状态本来就跟一般借用记录彼此独立，可以同时存在），
+// 也不需要时间段——一整天算。可以一次勾选多个场地 × 多个状态，会展开成每个场地/每天/每个
+// 状态各一行。
+function createSpecialStatusEntries(payload) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    if (!payload || !payload.venues || payload.venues.length === 0) throw new Error('⛔ 请至少勾选一个场地。');
+    if (!payload.statusNames || payload.statusNames.length === 0) throw new Error('⛔ 请至少勾选一个特殊状态。');
+    if (!payload.useDate) throw new Error('⛔ 请选择日期。');
+
+    let startParts = payload.useDate.split('-');
+    let startDate = new Date(Number(startParts[0]), Number(startParts[1]) - 1, Number(startParts[2]));
+    let endDate = startDate;
+    if (payload.endDate) {
+      let endParts = payload.endDate.split('-');
+      endDate = new Date(Number(endParts[0]), Number(endParts[1]) - 1, Number(endParts[2]));
+    }
+
+    const recurSet = (payload.recurWeekdays && payload.recurWeekdays.length > 0)
+      ? new Set(payload.recurWeekdays.map(Number)) : null;
+
+    if (recurSet) {
+      let checkDate = new Date(startDate);
+      let hasMatch = false;
+      while (checkDate <= endDate) {
+        if (recurSet.has(checkDate.getDay())) { hasMatch = true; break; }
+        checkDate.setDate(checkDate.getDate() + 1);
+      }
+      if (!hasMatch) {
+        throw new Error('⛔ 所选的日期区间内，找不到任何一天符合勾选的星期几，请检查日期范围或星期几设置。');
+      }
+    }
+
+    // 场地编号 -> 场地名称 对照表，标记记录里直接存场地名称，方便之后不用每次都反查《场地编号》
+    const venueNameMap = {};
+    getVenuesFromSheet().forEach(v => { venueNameMap[v.code] = v.name; });
+
+    const sheet = getOrCreateSpecialStatusSheet();
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    const todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    const formattedFillDate = formatDateStr(todayStr);
+
+    const rowsToAppend = [];
+    let current = new Date(startDate);
+    while (current <= endDate) {
+      if (!recurSet || recurSet.has(current.getDay())) {
+        const dateString = Utilities.formatDate(current, Session.getScriptTimeZone(), "yyyy-MM-dd");
+        const formattedUseDate = formatDateStr(dateString);
+        payload.venues.forEach(venueCode => {
+          payload.statusNames.forEach(statusName => {
+            const id = "SS_" + Utilities.getUuid();
+            rowsToAppend.push([id, venueCode, venueNameMap[venueCode] || '', statusName, formattedUseDate, operatorEmail, formattedFillDate, timestamp]);
+          });
+        });
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
+    if (rowsToAppend.length === 0) {
+      throw new Error('⛔ 没有产生任何要写入的记录，请检查日期设置。');
+    }
+
+    sheet.getRange(sheet.getLastRow() + 1, SPECIAL_STATUS_RECORD_START_COL, rowsToAppend.length, SPECIAL_STATUS_RECORD_HEADERS.length).setValues(rowsToAppend);
+
+    const summary = `新增特殊状态：${payload.venues.join('、')} 设为「${payload.statusNames.join('、')}」，共 ${rowsToAppend.length} 笔`;
+    logSpecialStatusAudit('新增特殊状态', operatorEmail, summary);
+
+    return { success: true, count: rowsToAppend.length };
+  } catch(err) { throw new Error(err.message); }
+}
+
+// 读取某个日期区间内的特殊状态标记（Table.html/Viewver.html 用，逻辑对齐 readRecordsForRange：
+// 传回的 date 已经统一转回 "yyyy-MM-dd"，方便前端直接用字符串比较）
+function readSpecialStatusForRange(startDateStr, endDateStr) {
+  try {
+    if (!startDateStr || !endDateStr) return [];
+    const sheet = getOrCreateSpecialStatusSheet();
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return [];
+    const colorMap = new Map(getSpecialStatusesFromSheet().map(s => [s.name, s.color]));
+    const data = sheet.getRange(2, SPECIAL_STATUS_RECORD_START_COL, lastRow - 1, SPECIAL_STATUS_RECORD_HEADERS.length).getValues();
+    const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('ID');
+    const venueIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('场地编号');
+    const venueNameIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('场地名称');
+    const statusIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('状态名称');
+    const dateIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('使用日期');
+    const fillerIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('填写人');
+    const results = [];
+    for (let i = 0; i < data.length; i++) {
+      const dateVal = normalizeDateToISO(data[i][dateIdx]);
+      if (!dateVal || dateVal < startDateStr || dateVal > endDateStr) continue;
+      const statusName = String(data[i][statusIdx] || '').trim();
+      if (!statusName) continue;
+      results.push({
+        id: data[i][idIdx],
+        venueCode: String(data[i][venueIdx] || '').trim(),
+        venueName: String(data[i][venueNameIdx] || '').trim(),
+        status: statusName,
+        color: colorMap.get(statusName) || '',
+        date: dateVal,
+        filler: String(data[i][fillerIdx] || '').trim()
+      });
+    }
+    return results;
+  } catch(err) { return []; }
+}
+
+// 包一层给 Table.html 用（矩阵总表按月看），内部还是走 readSpecialStatusForRange
+function readSpecialStatusForMonth(monthKey) {
+  try {
+    if (!monthKey) return [];
+    const parts = monthKey.split('-');
+    const y = Number(parts[0]), m = Number(parts[1]);
+    if (!y || !m) return [];
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const startStr = monthKey + '-01';
+    const endStr = monthKey + '-' + String(daysInMonth).padStart(2, '0');
+    return readSpecialStatusForRange(startStr, endStr);
+  } catch(err) { return []; }
+}
+
+// 管理端用：列出所有特殊状态标记记录（不分月份，本来量就不大），按日期新到旧排序，
+// 给 Admin.html 一个简单的清单可以查看/删除已经不需要的标记（例如维修完了要取消状态）
+function readSpecialStatusList() {
+  try {
+    const sheet = getOrCreateSpecialStatusSheet();
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return [];
+    const data = sheet.getRange(2, SPECIAL_STATUS_RECORD_START_COL, lastRow - 1, SPECIAL_STATUS_RECORD_HEADERS.length).getValues();
+    const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('ID');
+    const venueIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('场地编号');
+    const venueNameIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('场地名称');
+    const statusIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('状态名称');
+    const dateIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('使用日期');
+    const fillerIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf('填写人');
+    const list = [];
+    for (let i = 0; i < data.length; i++) {
+      const id = data[i][idIdx];
+      if (!id) continue;
+      list.push({
+        id: id,
+        venueCode: String(data[i][venueIdx] || '').trim(),
+        venueName: String(data[i][venueNameIdx] || '').trim(),
+        status: String(data[i][statusIdx] || '').trim(),
+        date: normalizeDateToISO(data[i][dateIdx]),
+        filler: String(data[i][fillerIdx] || '').trim()
+      });
+    }
+    list.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    return list;
+  } catch(err) { return []; }
+}
+
+// 管理端用：删除指定 ID 的特殊状态标记（例如维修完了、考试结束了，手动取消）。
+// 这份数据量通常不大，直接整表读出来找对应的 ID 就好，不用像 batchDeleteRecords() 那样
+// 跨多张月份工作表逐一扫描。
+function deleteSpecialStatusEntries(ids) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    if (!ids || ids.length === 0) return { success: true, count: 0 };
+    const sheet = getOrCreateSpecialStatusSheet();
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return { success: true, count: 0 };
+    const idSet = new Set(ids);
+    const idColOffset = SPECIAL_STATUS_RECORD_HEADERS.indexOf('ID');
+    const data = sheet.getRange(2, SPECIAL_STATUS_RECORD_START_COL, lastRow - 1, SPECIAL_STATUS_RECORD_HEADERS.length).getValues();
+    let deletedCount = 0;
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (idSet.has(data[i][idColOffset])) {
+        sheet.deleteRow(i + 2); // data 是 0-index、且从工作表第 2 行开始，行号要 +2
+        deletedCount++;
+      }
+    }
+    if (deletedCount > 0) {
+      logSpecialStatusAudit('删除特殊状态', operatorEmail, `删除了 ${deletedCount} 笔特殊状态标记`);
+    }
+    return { success: true, count: deletedCount };
+  } catch(err) { throw new Error(err.message); }
+}
+
+// 特殊状态专用的简化版操作日志（跟 logAudit() 共用同一张《操作日志》表，但栏位形状对不上
+// 一般借用记录的 HEADERS，所以摘要文字直接放进"活动"那一栏，其余栏位留空）
+function logSpecialStatusAudit(actionType, operatorEmail, summaryText) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(AUDIT_SHEET_NAME);
+      sheet.appendRow(['时间', '操作类型', '操作人邮箱', '记录ID', '场地', '活动', '单位', '时间段']);
+      sheet.setFrozenRows(1);
+      sheet.getRange("A1:H1").setFontWeight("bold");
+    }
+    const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    sheet.appendRow([now, actionType, operatorEmail || '未知', '', '', summaryText, '', '']);
+  } catch(e) {
+    console.error('写入特殊状态操作日志失败: ' + e.message);
+  }
+}
 
 function normalizeDateToISO(val) {
   if (val === null || val === undefined) return "";
@@ -530,6 +811,10 @@ function findVenueTimeConflict(venueCode, dateString, timeStartStr, timeEndStr, 
 function createRecord(record) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
   try {
+    // 🆕「填写人」留空就自动带出当前登入者的姓名+email，不强迫一定要手动填
+    if (!record.filler || String(record.filler).trim() === '') {
+      record.filler = getCurrentUserDisplayLabel(operatorEmail);
+    }
     let startParts = record.useDate.split('-');
     let startDate = new Date(Number(startParts[0]), Number(startParts[1]) - 1, Number(startParts[2]));
     let endDate = startDate;
@@ -635,6 +920,10 @@ function batchDeleteRecords(ids) {
 function updateRecord(id, record) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
   try {
+    // 🆕「填写人」留空就自动带出当前登入者的姓名+email，不强迫一定要手动填
+    if (!record.filler || String(record.filler).trim() === '') {
+      record.filler = getCurrentUserDisplayLabel(operatorEmail);
+    }
     let singleVenue = (record.venues && record.venues.length > 0) ? record.venues[0] : '';
 
     // 🚧 编辑记录同样要检查冲突，但排除自己原本这一笔，避免跟自己"撞档"

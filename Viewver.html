@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>场地借用日历</title>
+  <title>场地借用表 · 日历</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.css" rel="stylesheet">
   <style>
@@ -19,7 +20,9 @@
       --page-bg: #f6f7fb;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       padding: 18px;
@@ -34,7 +37,7 @@
       justify-content: center;
       gap: 10px;
       margin: 2px 6px 14px;
-      font-size: 20px;
+      font-size: 26px;
       font-weight: 700;
       color: var(--ink);
     }
@@ -117,267 +120,393 @@
       box-shadow: 0 4px 15px rgba(15, 23, 42, 0.1);
     }
 
-    .loading-box .spinner-border { color: var(--accent) !important; }
+    .loading-box .spinner-border {
+      color: var(--accent) !important;
+    }
 
     /* 🎨 日历本体配色跟矩阵总表统一用 --accent，不再是 FullCalendar 默认的蓝色 */
-    .fc-button-primary { background-color: var(--accent) !important; border-color: var(--accent) !important; }
-    .fc-button-primary:hover { background-color: var(--accent-dark) !important; border-color: var(--accent-dark) !important; }
-    .fc-button-primary:disabled { background-color: var(--muted) !important; border-color: var(--muted) !important; }
+    .fc-button-primary {
+      background-color: var(--accent) !important;
+      border-color: var(--accent) !important;
+    }
+
+    .fc-button-primary:hover {
+      background-color: var(--accent-dark) !important;
+      border-color: var(--accent-dark) !important;
+    }
+
+    .fc-button-primary:disabled {
+      background-color: var(--muted) !important;
+      border-color: var(--muted) !important;
+    }
+
     .fc-daygrid-day.fc-day-today,
-    .fc-timegrid-col.fc-day-today { background-color: #eaf2ff !important; }
+    .fc-timegrid-col.fc-day-today {
+      background-color: #eaf2ff !important;
+    }
 
     .fc-event {
       cursor: pointer !important;
       padding: 2px 4px;
       border-radius: 4px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
     }
 
     @media (max-width: 640px) {
-      body { padding: 10px; }
+      body {
+        padding: 10px;
+      }
     }
   </style>
 </head>
+
 <body>
 
-<div class="container-fluid p-0">
-  <div class="page-title">
-    📅 场地借用日程表 <span class="sub">公众浏览</span>
+  <div class="container-fluid p-0">
+    <div class="page-title">
+      📅 场地借用表 <span class="sub">月历视图 · 公众浏览</span>
+    </div>
+
+    <div class="unit-legend-row d-none" id="unitLegendRow">
+      <span class="fw-bold text-nowrap" style="font-size:20px; color: var(--ink);">🏢 行政单位：</span>
+      <div class="legend-chips" id="unitLegendChips"></div>
+    </div>
+
+    <div class="unit-legend-row d-none" id="specialStatusLegendRow">
+      <span class="fw-bold text-nowrap" style="font-size:20px; color: var(--ink);">🚧 特殊状态：</span>
+      <div class="legend-chips" id="specialStatusLegendChips"></div>
+    </div>
+
+    <div id="calendar"></div>
   </div>
 
-  <div class="unit-legend-row d-none" id="unitLegendRow">
-    <span class="fw-bold text-nowrap" style="font-size:12.5px; color: var(--ink);">🏢 行政单位：</span>
-    <div class="legend-chips" id="unitLegendChips"></div>
-  </div>
-
-  <div id="calendar"></div>
-</div>
-
-<div class="modal fade" id="bookingDetailModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content" style="border: none; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
-      <div class="modal-header bg-primary text-white" style="border-top-left-radius: 14px; border-top-right-radius: 14px;">
-        <h5 class="modal-title fw-bold">📌 场地借用详细明细</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body p-4">
-        <div class="d-flex align-items-center mb-3">
-          <span class="badge bg-info text-dark px-3 py-2 me-3 fw-bold" id="modalVenue" style="font-size: 14px;"></span>
-          <h5 class="m-0 fw-bold text-dark" id="modalEvent"></h5>
+  <div class="modal fade" id="bookingDetailModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content" style="border: none; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
+        <div class="modal-header bg-primary text-white"
+          style="border-top-left-radius: 14px; border-top-right-radius: 14px;">
+          <h5 class="modal-title fw-bold">📌 场地借用详细明细</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
-        <hr class="text-muted">
-        <table class="table table-borderless m-0" style="font-size: 15px;">
-          <tr>
-            <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🏢 借用单位:</td>
-            <td id="modalUnit" class="text-dark fw-bold"></td>
-          </tr>
-          <tr>
-            <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🕒 借用时间:</td>
-            <td id="modalTime" class="text-danger fw-bold"></td>
-          </tr>
-          <tr>
-            <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">✍️ 申请人员:</td>
-            <td id="modalFiller" class="text-dark"></td>
-          </tr>
-          <tr>
-            <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">📝 填写日期:</td>
-            <td id="modalFillDate" class="text-muted"></td>
-          </tr>
-        </table>
-      </div>
-      <div class="modal-footer bg-light" style="border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;">
-        <button type="button" class="btn btn-secondary px-4 btn-sm rounded-pill" data-bs-dismiss="modal">安全关闭</button>
+        <div class="modal-body p-4">
+          <div class="d-flex align-items-center mb-3">
+            <span class="badge bg-info text-dark px-3 py-2 me-3 fw-bold" id="modalVenue"
+              style="font-size: 14px;"></span>
+            <h5 class="m-0 fw-bold text-dark" id="modalEvent"></h5>
+          </div>
+          <hr class="text-muted">
+          <table class="table table-borderless m-0" style="font-size: 15px;">
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🏢 借用单位:</td>
+              <td id="modalUnit" class="text-dark fw-bold"></td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">🕒 借用时间:</td>
+              <td id="modalTime" class="text-danger fw-bold"></td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">✍️ 申请人员:</td>
+              <td id="modalFiller" class="text-dark"></td>
+            </tr>
+            <tr>
+              <td class="fw-bold text-secondary text-nowrap" style="width: 1%;">📝 填写日期:</td>
+              <td id="modalFillDate" class="text-muted"></td>
+            </tr>
+          </table>
+        </div>
+        <div class="modal-footer bg-light" style="border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;">
+          <button type="button" class="btn btn-secondary px-4 btn-sm rounded-pill" data-bs-dismiss="modal">安全关闭</button>
+        </div>
       </div>
     </div>
   </div>
-</div>
 
-<div class="loading-overlay" id="loadingOverlay">
-  <div class="loading-box">
-    <div class="spinner-border text-primary mb-2" id="loadingSpinner" role="status"></div>
-    <div class="text-secondary small fw-bold" id="loadingText">正在向系统索取最新场地数据...</div>
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-box">
+      <div class="spinner-border text-primary mb-2" id="loadingSpinner" role="status"></div>
+      <div class="text-secondary small fw-bold" id="loadingText">正在向系统索取最新场地数据...</div>
+    </div>
   </div>
-</div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js"></script>
 
-<script>
-  let unitColorMap = new Map(); // 🎨 单位名 -> "#rrggbb"，来自《场地编号》"单位"列的手动格子底色（已排除学会团体）
-  const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+  <script>
+    let unitColorMap = new Map(); // 🎨 单位名 -> "#rrggbb"，来自《场地编号》"单位"列的手动格子底色（已排除学会团体）
+    const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
-  // 🛡️ XSS 防呆：把用户输入的文字转成安全的 HTML 实体，再塞进 innerHTML（图例用；
-  // 明细弹窗走的是 innerText，本身就不会被当成 HTML 解析，不需要额外转义）
-  function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
+    // 🛡️ XSS 防呆：把用户输入的文字转成安全的 HTML 实体，再塞进 innerHTML（图例用；
+    // 明细弹窗走的是 innerText，本身就不会被当成 HTML 解析，不需要额外转义）
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
 
-  document.addEventListener('DOMContentLoaded', function() {
-    // 🎨 跟矩阵总表共用同一个后端接口，拉取行政单位的颜色设定，日历事件也用同样的颜色区分
-    google.script.run
-      .withSuccessHandler(function(colorList) {
-        colorList = colorList || [];
-        unitColorMap = new Map(colorList.map(item => [item.unit, item.color]));
-        renderUnitLegend(colorList);
-      })
-      .withFailureHandler(function() {
-        unitColorMap = new Map();
-      })
-      .getUnitColorMap();
+    let specialStatusColorMap = new Map(); // 🚧 状态名 -> "#rrggbb"，来自《特殊状态》表 A 列的手动列出+上色
 
-    initCalendar();
-  });
+    document.addEventListener('DOMContentLoaded', function () {
+      // 🎨 跟矩阵总表共用同一个后端接口，拉取行政单位的颜色设定，日历事件也用同样的颜色区分
+      google.script.run
+        .withSuccessHandler(function (colorList) {
+          colorList = colorList || [];
+          unitColorMap = new Map(colorList.map(item => [item.unit, item.color]));
+          renderUnitLegend(colorList);
+        })
+        .withFailureHandler(function () {
+          unitColorMap = new Map();
+        })
+        .getUnitColorMap();
 
-  // 🎨 在日历上方生成"🏢 行政单位："图例，只列出真的有设色的单位
-  function renderUnitLegend(colorList) {
-    const row = document.getElementById('unitLegendRow');
-    const container = document.getElementById('unitLegendChips');
-    const items = colorList.filter(item => HEX_COLOR_RE.test(item.color));
-    if (items.length === 0) { row.classList.add('d-none'); container.innerHTML = ''; return; }
-    container.innerHTML = items.map(item =>
-      `<span class="legend-chip"><span class="legend-swatch" style="background:${item.color}"></span>${escapeHtml(item.unit)}</span>`
-    ).join('');
-    row.classList.remove('d-none');
-  }
+      // 🚧 跟矩阵总表共用同一个后端接口，拉取特殊状态类型的颜色设定，日历事件也用同样的颜色区分
+      google.script.run
+        .withSuccessHandler(function (list) {
+          list = list || [];
+          specialStatusColorMap = new Map(list.map(item => [item.name, item.color]));
+          renderSpecialStatusLegend(list);
+        })
+        .withFailureHandler(function () {
+          specialStatusColorMap = new Map();
+        })
+        .getSpecialStatusesFromSheet();
 
-  // 🎨 依背景色亮度自动挑一个看得清楚的文字颜色（浅色底配深色字，深色底配白字）
-  function pickReadableTextColor(hexColor) {
-    const hex = hexColor.replace('#', '');
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.6 ? '#1f2733' : '#ffffff';
-  }
-
-  function formatLocalDate(d) {
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-
-  // 🧠 核心：把后端记录洗成 FullCalendar 事件需要的格式，同时把纯文本时间映射为标准 ISO 坐标时间
-  function buildEventsFromRecords(data) {
-    return data.map(item => {
-      let isoDate = item.使用日期 || '';
-      let timeStr = item.时间 || '';
-
-      let eventStart = isoDate;
-      let eventEnd = null;
-      let isAllDay = true; // 默认为全天事件
-
-      // 智能时间解析器：自动提取文本中的"小时"和"分钟"
-      // 兼容格式："14:00-16:00", "08.00 - 1200", "0800-1200" 等
-      if (isoDate && timeStr) {
-        const regex = /(?:^|\D)(\d{1,2})[:.]?(\d{2})(?=\D|$)/g;
-        let timeMatches = [];
-        let match;
-
-        while ((match = regex.exec(timeStr)) !== null) {
-          timeMatches.push({ h: parseInt(match[1]), m: parseInt(match[2]) });
-        }
-
-        if (timeMatches.length >= 2) {
-          let sH = String(timeMatches[0].h).padStart(2, '0');
-          let sM = String(timeMatches[0].m).padStart(2, '0');
-          let eH = String(timeMatches[1].h).padStart(2, '0');
-          let eM = String(timeMatches[1].m).padStart(2, '0');
-
-          eventStart = `${isoDate}T${sH}:${sM}:00`;
-          eventEnd = `${isoDate}T${eH}:${eM}:00`;
-          isAllDay = false; // 拥有了绝对时间锚点，不再是全天事件
-        }
-      }
-
-      const unitName = item.单位 || '';
-      const unitColor = unitColorMap.get(unitName);
-
-      const eventObj = {
-        title: `[${item.场地 || '未知'}] ${item.活动 || '无活动'}`,
-        start: eventStart,
-        end: eventEnd,
-        allDay: isAllDay,
-        extendedProps: {
-          time: item.时间 || '-',
-          filler: item.填写人 || '无',
-          unit: unitName || '-',
-          venue: item.场地 || '-',
-          event: item.活动 || '-',
-          fillDate: item.填写日期 || '未记录'
-        }
-      };
-
-      // 🎨 有对应行政单位颜色的记录，事件底色跟着套用（不影响没上色的学会团体/其他记录）
-      if (unitColor && HEX_COLOR_RE.test(unitColor)) {
-        eventObj.backgroundColor = unitColor;
-        eventObj.borderColor = unitColor;
-        eventObj.textColor = pickReadableTextColor(unitColor);
-      }
-
-      return eventObj;
+      initCalendar();
     });
-  }
 
-  function initCalendar() {
-    const calendarEl = document.getElementById('calendar');
-
-    const calendar = new FullCalendar.Calendar(calendarEl, {
-      initialView: 'dayGridMonth',
-      locale: 'zh-cn',
-      headerToolbar: {
-        left: 'prev,next today',
-        center: 'title',
-        right: 'dayGridMonth,timeGridWeek,listMonth'
-      },
-      buttonText: { today: '今天', month: '月视图', week: '周视图', list: '明细表' },
-
-      // 🆕 体验优化：限制周视图的垂直高度，去掉凌晨不必要的时段，让排版更紧凑漂亮
-      slotMinTime: '06:00:00', // 早上从 6 点开始显示
-      slotMaxTime: '23:00:00', // 晚上显示到 11 点
-      allDayText: '全天/无明确时间', // 兼容那些没有填写具体时间的数据
-
-      // ⚡ 性能优化：改用 FullCalendar 内建的异步事件源，每次翻页/切视图只会带来
-      // 当前可视区间需要的数据（后端 readRecordsForRange 只读交集到的那几张月份工作表），
-      // 不再是打开页面就把系统里所有历史月份的记录一次性全部读出来
-      events: function(info, successCallback, failureCallback) {
-        document.getElementById('loadingOverlay').style.display = 'block';
-        const startDateStr = info.startStr.substring(0, 10);
-        const endDateExclusive = new Date(info.endStr.substring(0, 10) + 'T00:00:00');
-        endDateExclusive.setDate(endDateExclusive.getDate() - 1);
-        const endDateStr = formatLocalDate(endDateExclusive);
-
-        google.script.run
-          .withSuccessHandler(function(records) {
-            successCallback(buildEventsFromRecords(records || []));
-            document.getElementById('loadingOverlay').style.display = 'none';
-          })
-          .withFailureHandler(function(err) {
-            alert('读取记录失败: ' + (err && err.message ? err.message : err));
-            failureCallback(err);
-            document.getElementById('loadingOverlay').style.display = 'none';
-          })
-          .readRecordsForRange(startDateStr, endDateStr);
-      },
-
-      eventClick: function(info) {
-        const p = info.event.extendedProps;
-        document.getElementById('modalVenue').innerText = p.venue;
-        document.getElementById('modalEvent').innerText = p.event;
-        document.getElementById('modalUnit').innerText = p.unit;
-        document.getElementById('modalTime').innerText = p.time;
-        document.getElementById('modalFiller').innerText = p.filler;
-        document.getElementById('modalFillDate').innerText = p.fillDate;
-
-        const bookingModal = new bootstrap.Modal(document.getElementById('bookingDetailModal'));
-        bookingModal.show();
+    // 🎨 在日历上方生成"🏢 行政单位："图例，只列出真的有设色的单位
+    function renderUnitLegend(colorList) {
+      const row = document.getElementById('unitLegendRow');
+      const container = document.getElementById('unitLegendChips');
+      const items = colorList.filter(item => HEX_COLOR_RE.test(item.color));
+      if (items.length === 0) {
+        row.classList.add('d-none');
+        container.innerHTML = '';
+        return;
       }
-    });
-    calendar.render();
-  }
-</script>
+      container.innerHTML = items.map(item =>
+        `<span class="legend-chip"><span class="legend-swatch" style="background:${item.color}"></span>${escapeHtml(item.unit)}</span>`
+      ).join('');
+      row.classList.remove('d-none');
+    }
+
+    // 🚧 在单位图例下方生成"🚧 特殊状态："图例，只列出真的有设色的状态类型
+    function renderSpecialStatusLegend(list) {
+      const row = document.getElementById('specialStatusLegendRow');
+      const container = document.getElementById('specialStatusLegendChips');
+      const items = list.filter(item => HEX_COLOR_RE.test(item.color));
+      if (items.length === 0) {
+        row.classList.add('d-none');
+        container.innerHTML = '';
+        return;
+      }
+      container.innerHTML = items.map(item =>
+        `<span class="legend-chip"><span class="legend-swatch" style="background:${item.color}"></span>${escapeHtml(item.name)}</span>`
+      ).join('');
+      row.classList.remove('d-none');
+    }
+
+    // 🎨 依背景色亮度自动挑一个看得清楚的文字颜色（浅色底配深色字，深色底配白字）
+    function pickReadableTextColor(hexColor) {
+      const hex = hexColor.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      return luminance > 0.6 ? '#1f2733' : '#ffffff';
+    }
+
+    function formatLocalDate(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2,
+        '0');
+    }
+
+    // 🧠 核心：把后端记录洗成 FullCalendar 事件需要的格式，同时把纯文本时间映射为标准 ISO 坐标时间
+    function buildEventsFromRecords(data) {
+      return data.map(item => {
+        let isoDate = item.使用日期 || '';
+        let timeStr = item.时间 || '';
+
+        let eventStart = isoDate;
+        let eventEnd = null;
+        let isAllDay = true; // 默认为全天事件
+
+        // 智能时间解析器：自动提取文本中的"小时"和"分钟"
+        // 兼容格式："14:00-16:00", "08.00 - 1200", "0800-1200" 等
+        if (isoDate && timeStr) {
+          const regex = /(?:^|\D)(\d{1,2})[:.]?(\d{2})(?=\D|$)/g;
+          let timeMatches = [];
+          let match;
+
+          while ((match = regex.exec(timeStr)) !== null) {
+            timeMatches.push({
+              h: parseInt(match[1]),
+              m: parseInt(match[2])
+            });
+          }
+
+          if (timeMatches.length >= 2) {
+            let sH = String(timeMatches[0].h).padStart(2, '0');
+            let sM = String(timeMatches[0].m).padStart(2, '0');
+            let eH = String(timeMatches[1].h).padStart(2, '0');
+            let eM = String(timeMatches[1].m).padStart(2, '0');
+
+            eventStart = `${isoDate}T${sH}:${sM}:00`;
+            eventEnd = `${isoDate}T${eH}:${eM}:00`;
+            isAllDay = false; // 拥有了绝对时间锚点，不再是全天事件
+          }
+        }
+
+        const unitName = item.单位 || '';
+        const unitColor = unitColorMap.get(unitName);
+
+        const eventObj = {
+          title: `[${item.场地 || '未知'}] ${item.活动 || '无活动'}`,
+          start: eventStart,
+          end: eventEnd,
+          allDay: isAllDay,
+          extendedProps: {
+            time: item.时间 || '-',
+            filler: item.填写人 || '无',
+            unit: unitName || '-',
+            venue: item.场地 || '-',
+            event: item.活动 || '-',
+            fillDate: item.填写日期 || '未记录'
+          }
+        };
+
+        // 🎨 有对应行政单位颜色的记录，事件底色跟着套用（不影响没上色的学会团体/其他记录）
+        if (unitColor && HEX_COLOR_RE.test(unitColor)) {
+          eventObj.backgroundColor = unitColor;
+          eventObj.borderColor = unitColor;
+          eventObj.textColor = pickReadableTextColor(unitColor);
+        }
+
+        return eventObj;
+      });
+    }
+
+    // 🚧 把《特殊状态》的标记洗成 FullCalendar 全天事件（维修/考试场地/不外借这类"整天算"的状态，
+    // 不像一般借用有明确的开始/结束时间，用全天事件正好表达"这天这个场地是这个状态"）
+    function buildAllDayEventsFromSpecialStatus(list) {
+      return list.map(item => {
+        const color = HEX_COLOR_RE.test(item.color) ? item.color : (specialStatusColorMap.get(item.status) ||
+          '#f59e0b');
+        const venueLabel = item.venueName ? `${item.venueCode} (${item.venueName})` : item.venueCode;
+        return {
+          title: `🚧 ${venueLabel} · ${item.status}`,
+          start: item.date,
+          allDay: true,
+          backgroundColor: color,
+          borderColor: color,
+          textColor: pickReadableTextColor(color),
+          extendedProps: {
+            isSpecialStatus: true,
+            venue: venueLabel,
+            status: item.status,
+            date: item.date,
+            filler: item.filler || '-'
+          }
+        };
+      });
+    }
+
+    function initCalendar() {
+      const calendarEl = document.getElementById('calendar');
+
+      const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        locale: 'zh-cn',
+        headerToolbar: {
+          left: 'prev,next today',
+          center: 'title',
+          right: 'dayGridMonth,timeGridWeek,listMonth'
+        },
+        buttonText: {
+          today: '今天',
+          month: '月视图',
+          week: '周视图',
+          list: '明细表'
+        },
+
+        // 🆕 体验优化：限制周视图的垂直高度，去掉凌晨不必要的时段，让排版更紧凑漂亮
+        slotMinTime: '06:00:00', // 早上从 6 点开始显示
+        slotMaxTime: '23:00:00', // 晚上显示到 11 点
+        allDayText: '全天/无明确时间', // 兼容那些没有填写具体时间的数据
+
+        // ⚡ 性能优化：改用 FullCalendar 内建的异步事件源，每次翻页/切视图只会带来
+        // 当前可视区间需要的数据（后端 readRecordsForRange 只读交集到的那几张月份工作表），
+        // 不再是打开页面就把系统里所有历史月份的记录一次性全部读出来
+        events: function (info, successCallback, failureCallback) {
+          document.getElementById('loadingOverlay').style.display = 'block';
+          const startDateStr = info.startStr.substring(0, 10);
+          const endDateExclusive = new Date(info.endStr.substring(0, 10) + 'T00:00:00');
+          endDateExclusive.setDate(endDateExclusive.getDate() - 1);
+          const endDateStr = formatLocalDate(endDateExclusive);
+
+          // 🚧 一般借用记录 + 特殊状态标记是两个独立接口，两个都回来了才一次性交给 FullCalendar，
+          // 避免翻页时特殊状态标记还没到、画面先漏画一次
+          let pending = 2;
+          let combinedEvents = [];
+          const finishOne = function () {
+            pending--;
+            if (pending === 0) {
+              successCallback(combinedEvents);
+              document.getElementById('loadingOverlay').style.display = 'none';
+            }
+          };
+
+          google.script.run
+            .withSuccessHandler(function (records) {
+              combinedEvents = combinedEvents.concat(buildEventsFromRecords(records || []));
+              finishOne();
+            })
+            .withFailureHandler(function (err) {
+              alert('读取记录失败: ' + (err && err.message ? err.message : err));
+              finishOne();
+            })
+            .readRecordsForRange(startDateStr, endDateStr);
+
+          google.script.run
+            .withSuccessHandler(function (list) {
+              combinedEvents = combinedEvents.concat(buildAllDayEventsFromSpecialStatus(list || []));
+              finishOne();
+            })
+            .withFailureHandler(function () {
+              finishOne();
+            })
+            .readSpecialStatusForRange(startDateStr, endDateStr);
+        },
+
+        eventClick: function (info) {
+          const p = info.event.extendedProps;
+          if (p.isSpecialStatus) {
+            // 🚧 特殊状态事件跟一般借用记录字段不太一样，复用同一个明细弹窗、简化显示
+            document.getElementById('modalVenue').innerText = p.venue;
+            document.getElementById('modalEvent').innerText = `🚧 ${p.status}`;
+            document.getElementById('modalUnit').innerText = '-';
+            document.getElementById('modalTime').innerText = '全天';
+            document.getElementById('modalFiller').innerText = p.filler;
+            document.getElementById('modalFillDate').innerText = p.date;
+          } else {
+            document.getElementById('modalVenue').innerText = p.venue;
+            document.getElementById('modalEvent').innerText = p.event;
+            document.getElementById('modalUnit').innerText = p.unit;
+            document.getElementById('modalTime').innerText = p.time;
+            document.getElementById('modalFiller').innerText = p.filler;
+            document.getElementById('modalFillDate').innerText = p.fillDate;
+          }
+
+          const bookingModal = new bootstrap.Modal(document.getElementById('bookingDetailModal'));
+          bookingModal.show();
+        }
+      });
+      calendar.render();
+    }
+  </script>
 </body>
+
 </html>
