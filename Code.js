@@ -938,6 +938,10 @@ function getTvBoardWeekData() {
       records: weekRecords,
       specialStatus: weekSpecial,
       unitColors: getUnitColorMap(),
+      // 🏢🚧 顶部"行政单位"/"特殊状态"图例用的颜色对照表，跟 Table.html 矩阵总表
+      // 是完全同一套数据来源（getUnitColorMap() / getSpecialStatusesFromSheet()），
+      // 一起塞进这个函数的回传值，电视看板不用为了图例再多打一次 RPC
+      specialStatusTypes: getSpecialStatusesFromSheet(),
     };
   } catch (err) {
     throw new Error(err.message);
@@ -1596,186 +1600,173 @@ function fixTimeColumnFormatting() {
 }
 
 // ====================================================================
-// 📢 Table.html 矩阵总表右侧公告栏：读取指定 Google 文档内容
+// 📢 Table.html 矩阵总表右侧公告栏：读取《公告栏》工作表 A2 格的 Markdown 内容
 // ====================================================================
-// 想法是管理员平常要改公告，只要去编辑这份 Google 文档就好，不用碰任何代码、也不用重新部署——
-// 矩阵总表每次打开、以及开着的分页每 5 分钟都会自动重新读一次这份文档的最新内容。
+// ⚠️ 这里原本是读取一份指定的 Google 文档（DocumentApp.openById），后来发现
+// Google 会不定期自动撤销这类第三方文档访问的授权（尤其是学校/企业 Workspace
+// 账号，管理员那边的安全策略定期重新检查/收回授权是常见现象），导致公告栏三不五时
+// 就跳出「您没有调用 DocumentApp.openById 的权限」，要手动重新跑一次授权才能修好，
+// 很不稳定。索性改成直接读同一个 Google Sheets 项目里的一张《公告栏》工作表——
+// 反正 SpreadsheetApp 本来就是这个项目最基本、最不会被单独收回的权限，不会再有
+// 这种权限时不时被撤销的问题。
 //
-// ⚠️ 部署后请把下面这个 ID 换成你实际要显示的 Google 文档：网址
-// https://docs.google.com/document/d/【这一串】/edit 里、/d/ 和 /edit 之间的那一串英数字。
-// 留空或维持预设值的话，公告栏会显示"尚未设置"，不会影响矩阵总表其他功能。
-const ANNOUNCEMENT_DOC_ID = "1C9Wgde61e_GvjFKORJ8NJcmSEPn07eVgzLI8mGelB_Y";
+// v3（这一版）：A2 存的从"直接手打 HTML"改成 **Markdown 语法**（# 标题、**粗体**、
+// - 条列、[文字](链接) 之类），后端完全不处理转换——Markdown → HTML 的转换挪到
+// 前端做（Table.html/Admin.html 都用同一个 CDN 载入的 marked.js），后端这里只是
+// 单纯存/取一段文字，跟内容到底是 Markdown 还是别的格式无关。
+//
+// 用法：管理员想改公告，最方便是用管理端页面最下方的「📢 矩阵总表公告栏」编辑区
+// （见 Admin.html 的 saveAnnouncementContent()），也可以不透过管理端，直接打开
+// 这份 Google Sheets、切到《公告栏》这张工作表，把 Markdown 内容整个贴在 A2 那
+// 一格（第一次使用时系统会自动建立这张工作表并放一段范例）。矩阵总表每次打开、
+// 以及开着的分页每 5 分钟都会自动重新读一次 A2 的最新内容，不用碰任何代码、
+// 也不用重新部署。
+//
+// ⚠️ 虽然主要是 Markdown 语法，但 A2 内容最终还是会交给前端的 marked.js 转成 HTML
+// 再塞进网页——marked.js 预设允许内文直接夹带原生 HTML 标签（例如想要的颜色/样式
+// Markdown 本身表达不出来时，可以直接写 `<span style="color:...">文字</span>`），
+// 所以效果上跟"信任的 HTML"是同一回事，只是常见情况（标题/粗体/条列/链接）现在
+// 用 Markdown 语法写更省事。这张工作表本来就只有拿得到这份 Google Sheets 编辑权限
+// 的人（也就是本来就信任的管理员）才能改，风险跟他们能编辑《场地编号》表的单位
+// 颜色是同一个等级。
+const ANNOUNCEMENT_SHEET_NAME = "公告栏";
+const ANNOUNCEMENT_CONTENT_ROW = 2;
+const ANNOUNCEMENT_CONTENT_COL = 1; // A2：实际要显示的 Markdown 内容
+const ANNOUNCEMENT_UPDATED_ROW = 2;
+const ANNOUNCEMENT_UPDATED_COL = 2; // B2：最后更新时间，由下面的 onEdit(e) 简易触发器自动写入
 
-function getAnnouncementHtml() {
+// 取得《公告栏》工作表，第一次使用时自动建立（含说明文字、范例 Markdown、防呆排版设置）
+function getOrCreateAnnouncementSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(ANNOUNCEMENT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(ANNOUNCEMENT_SHEET_NAME);
+    sheet
+      .getRange(1, ANNOUNCEMENT_CONTENT_COL)
+      .setValue(
+        "📢 公告内容（Markdown）——把要显示在矩阵总表公告栏的 Markdown 内容整个贴在下面这一格（A2）",
+      );
+    sheet
+      .getRange(1, ANNOUNCEMENT_UPDATED_COL)
+      .setValue("最后更新时间（自动填入，不用手动改）");
+    sheet.getRange(1, 1, 1, 2).setFontWeight("bold");
+    sheet.setFrozenRows(1);
+    sheet.setColumnWidth(ANNOUNCEMENT_CONTENT_COL, 520);
+    sheet.setColumnWidth(ANNOUNCEMENT_UPDATED_COL, 160);
+    sheet.setRowHeight(ANNOUNCEMENT_CONTENT_ROW, 220);
+    sheet
+      .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
+      .setWrap(true)
+      .setVerticalAlignment("top")
+      .setValue(
+        "# 📢 欢迎使用场地借用系统\n\n" +
+          "这里是公告内容，**直接用 Markdown 语法写**就能更新，例如这句用了" +
+          ' <span style="color:#e67e22">橘色文字</span>（Markdown 本身没有的效果，' +
+          "直接夹一段 HTML 也可以）。\n\n" +
+          "- 支持 `#`~`####` 标题、**粗体**、*斜体*、条列、[链接](https://example.com) 等常见 Markdown 语法\n" +
+          "- 改完这一格，矩阵总表最多 5 分钟内会自动跟上最新内容，不用重新整理网页",
+      );
+    sheet
+      .getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL)
+      .setValue(new Date());
+  }
+  return sheet;
+}
+
+function getAnnouncementContent() {
   try {
-    const docId = String(ANNOUNCEMENT_DOC_ID || "").trim();
-    if (!docId) {
-      return { configured: false, html: "", updated: "" };
+    const sheet = getOrCreateAnnouncementSheet();
+    const markdown = String(
+      sheet
+        .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
+        .getValue() || "",
+    ).trim();
+    if (!markdown) {
+      return { configured: false, markdown: "", updated: "" };
     }
-    const doc = DocumentApp.openById(docId);
-    const html = docBodyToHtml(doc.getBody());
 
     let updated = "";
-    try {
-      const file = DriveApp.getFileById(docId);
+    const updatedVal = sheet
+      .getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL)
+      .getValue();
+    if (updatedVal instanceof Date) {
       updated = Utilities.formatDate(
-        file.getLastUpdated(),
+        updatedVal,
         Session.getScriptTimeZone(),
         "yyyy-MM-dd HH:mm",
       );
-    } catch (ignoreErr) {
-      // 拿不到最后修改时间不影响公告本身显示，安静跳过就好
     }
 
-    return { configured: true, html: html, updated: updated };
+    return { configured: true, markdown: markdown, updated: updated };
   } catch (err) {
-    // 🛡️ 常见失败原因：ID 填错、文档被删除、或脚本执行者的账号没有这份文档的查看权限——
-    // 不管哪一种都不该让整个矩阵总表页面挂掉，只在公告栏本身显示错误信息
-    return { configured: true, html: "", updated: "", error: err.message };
+    // 🛡️ 不管什么原因失败，都不该让整个矩阵总表页面挂掉，只在公告栏本身显示错误信息
+    return { configured: true, markdown: "", updated: "", error: err.message };
   }
 }
 
-// 🔑 一次性授权用：第一次加上公告栏功能后，请在 Apps Script 编辑器里手动选中
-// 这个函数、点击「运行」执行一次，跳出的 Google 权限确认视窗直接允许即可。
+// 📢 Admin.html「矩阵总表公告栏」编辑区的保存按钮呼叫这个函数：直接把管理端大文本框
+// 打的 Markdown 写回《公告栏》工作表 A2 格（跟 getAnnouncementContent() 读的是同一格）。
 //
-// 为什么需要这一步：这个项目原本已经授权过一次（读取 Sheets 之类），后来才新增
-// DocumentApp/DriveApp 相关代码，但已经部署好的网页应用是「非互动」执行环境，
-// 没办法自己跳出授权视窗要新权限——一定要在编辑器里（互动环境）手动跑一次
-// 会用到新服务的函数，才能跳出授权视窗。跑这一次之后，已经部署好的网址
-// 不用重新部署新版本，直接就能正常读取公告文档了（因为执行身份/授权是同一个
-// Google 账号，网页应用会沿用这次授权的结果）。
+// ⚠️ 这里是用 Apps Script API（Range.setValue()）写入的，不是"真人在 Google Sheets
+// 界面手动编辑"，所以不会触发下面的 onEdit(e) 简易触发器——因此这里要自己顺手把
+// B2 的"最后更新时间"也写一次，不然透过管理端保存的话，时间戳不会自动更新。
+function saveAnnouncementContent(markdown) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  try {
+    const sheet = getOrCreateAnnouncementSheet();
+    const content = String(markdown == null ? "" : markdown);
+    sheet
+      .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
+      .setValue(content);
+
+    const now = new Date();
+    sheet
+      .getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL)
+      .setValue(now);
+
+    logSpecialStatusAudit("更新公告栏", operatorEmail, "更新了矩阵总表公告栏内容");
+
+    return {
+      success: true,
+      updated: Utilities.formatDate(
+        now,
+        Session.getScriptTimeZone(),
+        "yyyy-MM-dd HH:mm",
+      ),
+    };
+  } catch (err) {
+    throw new Error(err.message);
+  }
+}
+
+// 🕒 简易触发器（Apps Script 看到项目里有个函数就叫 onEdit(e) 会自动生效，不需要
+// 手动安装、也不需要额外的权限授权）：只要有人直接在《公告栏》工作表的 A2 那格
+// 手动编辑/贴上内容，就自动把 B2 的"最后更新时间"刷新成现在——纯粹方便管理员
+// 自己确认"改动有没有存上去"，不影响公告内容本身怎么显示。
 //
-// 如果 ANNOUNCEMENT_DOC_ID 还没填、或填错，这个函数一样能跑完，只是回传结果里
-// configured/error 会告诉你实际状况，方便排查。
-function authorizeAnnouncementDocAccess() {
-  const result = getAnnouncementHtml();
-  Logger.log(JSON.stringify(result));
-  return result;
-}
+// ⚠️ 一个 Apps Script 项目只能有一个叫这个名字的简易触发器：如果之后想再新增别的
+// "编辑表格自动做什么"需求，要把逻辑并进同一个 onEdit(e) 函数里，不能再定义第二个。
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    const sheet = e.range.getSheet();
+    if (sheet.getName() !== ANNOUNCEMENT_SHEET_NAME) return;
 
-// 把 Google 文档的 Body 转成 HTML：段落/标题/条列表都处理，
-// 文字的粗体/斜体/底线/颜色/超链接也会尽量保留，图片、表格等暂不处理（公告用不太到，先跳过避免出错）
-function docBodyToHtml(body) {
-  let html = "";
-  let listOpenTag = ""; // 目前正开着的 <ul> 或 <ol>，空字符串代表没有开着的清单
-  const numChildren = body.getNumChildren();
+    const editedRow1 = e.range.getRow();
+    const editedRowCount = e.range.getNumRows();
+    const editedCol1 = e.range.getColumn();
+    const editedColCount = e.range.getNumColumns();
+    const touchesContentCell =
+      editedRow1 <= ANNOUNCEMENT_CONTENT_ROW &&
+      ANNOUNCEMENT_CONTENT_ROW <= editedRow1 + editedRowCount - 1 &&
+      editedCol1 <= ANNOUNCEMENT_CONTENT_COL &&
+      ANNOUNCEMENT_CONTENT_COL <= editedCol1 + editedColCount - 1;
+    if (!touchesContentCell) return;
 
-  function closeListIfOpen() {
-    if (listOpenTag) {
-      html += "</" + listOpenTag + ">";
-      listOpenTag = "";
-    }
+    sheet
+      .getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL)
+      .setValue(new Date());
+  } catch (ignoreErr) {
+    // 简易触发器本来就不该让"编辑表格"这个动作本身失败，安静跳过就好
   }
-
-  for (let i = 0; i < numChildren; i++) {
-    const el = body.getChild(i);
-    const type = el.getType();
-
-    if (type === DocumentApp.ElementType.LIST_ITEM) {
-      const item = el.asListItem();
-      const isOrdered = item.getGlyphType() === DocumentApp.GlyphType.NUMBER;
-      const wantTag = isOrdered ? "ol" : "ul";
-      if (listOpenTag !== wantTag) {
-        closeListIfOpen();
-        html += "<" + wantTag + ">";
-        listOpenTag = wantTag;
-      }
-      html += "<li>" + textElementToHtml(item.editAsText()) + "</li>";
-      continue;
-    }
-
-    closeListIfOpen();
-
-    if (type === DocumentApp.ElementType.PARAGRAPH) {
-      const para = el.asParagraph();
-      const inner = textElementToHtml(para.editAsText());
-      if (!inner.trim()) {
-        // 空白段落当成一行小空隙，不然公告文档里段落间的空行会整个消失、排版跟原文档差很多
-        html += '<p class="ann-blank">&nbsp;</p>';
-        continue;
-      }
-      const tag = headingToHtmlTag(para.getHeading());
-      html += "<" + tag + ">" + inner + "</" + tag + ">";
-    }
-    // 表格/图片/分隔线等其他元素类型：公告内容通常用不到，先不处理，避免为了少见情况把逻辑搞复杂
-  }
-  closeListIfOpen();
-  return html;
-}
-
-function headingToHtmlTag(heading) {
-  const H = DocumentApp.ParagraphHeading;
-  switch (heading) {
-    case H.TITLE:
-      return "h2";
-    case H.HEADING1:
-      return "h3";
-    case H.SUBTITLE:
-      return "h4";
-    case H.HEADING2:
-      return "h4";
-    case H.HEADING3:
-      return "h5";
-    case H.HEADING4:
-      return "h5";
-    case H.HEADING5:
-      return "h5";
-    case H.HEADING6:
-      return "h5";
-    default:
-      return "p";
-  }
-}
-
-// 把一段 Text 元素按字符属性的分段点切开，逐段包上 <b>/<i>/<u>/颜色/超链接，
-// 尽量还原在 Google 文档里手动设置的格式
-function textElementToHtml(textEl) {
-  const content = textEl.getText();
-  if (!content) return "";
-  const indices = textEl.getTextAttributeIndices();
-  let html = "";
-  for (let i = 0; i < indices.length; i++) {
-    const start = indices[i];
-    const end = i + 1 < indices.length ? indices[i + 1] : content.length;
-    const segment = content.substring(start, end);
-    if (!segment) continue;
-    html += wrapTextSegment(textEl, start, escapeHtmlDoc(segment));
-  }
-  return html;
-}
-
-function wrapTextSegment(textEl, offset, escapedSegment) {
-  let seg = escapedSegment.replace(/\n/g, "<br>");
-
-  const styles = [];
-  const color = textEl.getForegroundColor(offset);
-  if (color) styles.push("color:" + color);
-  const bg = textEl.getBackgroundColor(offset);
-  if (bg) styles.push("background-color:" + bg);
-  if (styles.length) {
-    seg = '<span style="' + styles.join(";") + '">' + seg + "</span>";
-  }
-
-  const linkUrl = textEl.getLinkUrl(offset);
-  if (linkUrl) {
-    seg =
-      '<a href="' +
-      escapeHtmlDoc(linkUrl) +
-      '" target="_blank" rel="noopener">' +
-      seg +
-      "</a>";
-  }
-
-  if (textEl.isUnderline(offset)) seg = "<u>" + seg + "</u>";
-  if (textEl.isItalic(offset)) seg = "<i>" + seg + "</i>";
-  if (textEl.isBold(offset)) seg = "<b>" + seg + "</b>";
-
-  return seg;
-}
-
-function escapeHtmlDoc(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

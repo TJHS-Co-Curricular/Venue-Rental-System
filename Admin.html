@@ -364,6 +364,52 @@
         </div>
       </div>
     </div>
+
+    <!-- 📢 矩阵总表公告栏：内容实际存在《公告栏》工作表 A2 格，这里只是给管理员一个
+         大文本框方便编辑（不用再挤在 Google Sheets 小格子里打字）。内容格式是 Markdown，
+         保存走 saveAnnouncementContent()，一样是写回同一张表，不需要重新部署，矩阵总表
+         最多 5 分钟内会自动跟上最新内容。右侧预览用 marked.js 把 Markdown 转成 HTML，
+         跟矩阵总表实际显示效果一致；Markdown 表达不出来的样式（例如彩色文字）
+         也可以直接夹一段原生 HTML，marked 会原样保留。 -->
+    <div class="row mt-3">
+      <div class="col-12">
+        <div class="card shadow-sm">
+          <div
+            class="card-header bg-info bg-opacity-25 d-flex justify-content-between align-items-center py-2 flex-wrap gap-2">
+            <div class="d-flex align-items-center">
+              <span class="fw-bold">📢 矩阵总表公告栏</span>
+              <span class="text-secondary ms-2" id="announcementEditorUpdatedNote" style="font-size: 12px;"></span>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <button class="btn btn-outline-secondary btn-sm" type="button" onclick="loadAnnouncementEditor()">🔄
+                重新载入</button>
+              <button class="btn btn-primary btn-sm fw-bold" type="button" onclick="saveAnnouncementEditor()">💾
+                保存公告</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-lg-6">
+                <label class="form-label small text-secondary mb-1">Markdown 内容（支持 <code>#</code>~<code>####</code>
+                    标题、<code>**粗体**</code>、<code>*斜体*</code>、<code>- 条列</code>、<code>[链接](网址)</code>
+                    等常见语法；也可以直接夹一段原生 HTML，例如 <code>&lt;span
+                      style="color:..."&gt;</code>，marked 会原样保留）</label>
+                <textarea class="form-control" id="announcementMarkdownInput" rows="12"
+                  style="font-family: Consolas, 'Courier New', monospace; font-size: 13px;"
+                  oninput="updateAnnouncementPreview()" placeholder="# 公告标题&#10;&#10;公告内容..."></textarea>
+              </div>
+              <div class="col-lg-6">
+                <label class="form-label small text-secondary mb-1">预览</label>
+                <div id="announcementPreviewBox"
+                  style="border:1px solid #dee2e6; border-radius:8px; padding:14px 16px; min-height: 260px; max-height: 320px; overflow-y:auto; background:#fff;">
+                </div>
+              </div>
+            </div>
+            <div class="small text-secondary mt-2" id="announcementEditorStatus"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="loading-overlay" id="loadingOverlay">
@@ -374,6 +420,10 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- 📢 公告栏编辑区的右侧预览要跟矩阵总表的实际渲染效果一致，所以也用同一份 marked.js
+       把 Markdown 转成 HTML（marked 预设允许内文直接夹带原生 HTML 标签，所以偶尔想用
+       Markdown 表达不出来的样式，直接写一段 HTML 也一样有效） -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.js"></script>
   <script>
     let rawData = [];
     let venueOptions = [];
@@ -478,7 +528,56 @@
       loadUnitDropdown();
       loadSpecialStatusTypes();
       loadSpecialStatusList();
+      loadAnnouncementEditor();
     });
+
+    // 📢 矩阵总表公告栏：内容实际存在《公告栏》工作表 A2 格（跟 Table.html 读取的是
+    // 同一份），这里只是提供一个大文本框方便管理员编辑，不用再挤在 Google Sheets
+    // 小格子里打字。保存/载入都直接对同一格做，不涉及其他任何栏位。
+    function loadAnnouncementEditor() {
+      const statusEl = document.getElementById('announcementEditorStatus');
+      statusEl.textContent = '正在载入目前的公告内容...';
+      google.script.run
+        .withSuccessHandler(function (data) {
+          const markdown = (data && data.markdown) ? data.markdown : '';
+          document.getElementById('announcementMarkdownInput').value = markdown;
+          updateAnnouncementPreview();
+          document.getElementById('announcementEditorUpdatedNote').textContent =
+            (data && data.updated) ? ('最后更新于 ' + data.updated) : '';
+          statusEl.textContent = (data && data.error) ? ('⚠️ ' + data.error) : '';
+        })
+        .withFailureHandler(function (err) {
+          statusEl.textContent = '⚠️ 载入失败：' + formatOpError(err);
+        })
+        .getAnnouncementContent();
+    }
+
+    // 预览用 marked.js 把管理员打的 Markdown 转成 HTML 再显示——跟矩阵总表
+    // 实际显示时的转换方式完全一样，这里看到的效果就是矩阵总表会看到的效果。
+    // marked 预设允许内文直接夹带原生 HTML 标签通过，所以效果上跟"信任的 HTML"是同一回事，
+    // 只是这张工作表本来就只有信任的管理员能编辑，风险等级没变
+    function updateAnnouncementPreview() {
+      const markdown = document.getElementById('announcementMarkdownInput').value;
+      document.getElementById('announcementPreviewBox').innerHTML = (markdown && markdown.trim())
+        ? marked.parse(markdown)
+        : '<span class="text-secondary">（内容是空的，矩阵总表公告栏会显示"尚未设置"）</span>';
+    }
+
+    function saveAnnouncementEditor() {
+      const markdown = document.getElementById('announcementMarkdownInput').value;
+      const statusEl = document.getElementById('announcementEditorStatus');
+      statusEl.textContent = '正在保存...';
+      google.script.run
+        .withSuccessHandler(function (result) {
+          statusEl.textContent = '✅ 已保存';
+          document.getElementById('announcementEditorUpdatedNote').textContent =
+            (result && result.updated) ? ('最后更新于 ' + result.updated) : '';
+        })
+        .withFailureHandler(function (err) {
+          statusEl.textContent = '⚠️ 保存失败：' + formatOpError(err);
+        })
+        .saveAnnouncementContent(markdown);
+    }
 
     // 🚧 特殊状态：跟一般借用记录（venueOptions/globalSelectedVenues 共用左侧场地勾选）分开的独立小流程
     let specialStatusTypes = []; // [{name, color}]，来自《特殊状态》表 A 列的手动列出+上色

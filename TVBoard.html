@@ -307,6 +307,53 @@
       display: none !important;
     }
 
+    /* 🏢🚧 顶部图例：跟 Table.html 矩阵总表同一套"色块 chip"风格，只是字号缩小一点，
+       给电视看板的横条版面用，尽量不挤占下面场地卡片的高度 */
+    .legend-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 22px;
+      flex: 0 0 auto;
+      margin-bottom: 8px;
+    }
+
+    .legend-group {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .legend-label {
+      font-size: clamp(12px, 1.1vw, 15px);
+      font-weight: 700;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    .legend-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 10px;
+    }
+
+    .legend-chip {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: clamp(10px, 0.95vw, 12.5px);
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    .legend-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      flex: 0 0 auto;
+    }
+
     /* 细一点的滚动条（仅 WebKit 系浏览器生效） */
     .venue-grid-scroll::-webkit-scrollbar,
     .venues-row::-webkit-scrollbar {
@@ -332,6 +379,17 @@
       <div class="board-clock">
         <div class="clock-time" id="clockTime">--:--:--</div>
         <div class="clock-date" id="clockDate">----年--月--日</div>
+      </div>
+    </div>
+
+    <div class="legend-row" id="legendRow">
+      <div class="legend-group hidden" id="unitLegendGroup">
+        <span class="legend-label">🏢 行政单位：</span>
+        <div class="legend-chips" id="unitLegendChips"></div>
+      </div>
+      <div class="legend-group hidden" id="specialStatusLegendGroup">
+        <span class="legend-label">🚧 特殊状态：</span>
+        <div class="legend-chips" id="specialStatusLegendChips"></div>
       </div>
     </div>
 
@@ -366,6 +424,7 @@
     const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']; // 对齐 days[0..6] = 周一~周日
     const REFRESH_MS = 5 * 60 * 1000;    // 每 5 分钟重新向后端要一次资料
     const RELOAD_MS = 6 * 60 * 60 * 1000; // 每 6 小时整页重新载入一次，避免电视长时间开机后网页卡住/占用内存
+    const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i; // 跟 Table.html 同样的防呆：只接受标准 6 位色码，其他一律当作没设色处理
 
     let boardData = null;
     let retryTimer = null;
@@ -566,6 +625,37 @@
       });
     }
 
+    // 🏢🚧 顶部"行政单位"/"特殊状态"图例：跟 Table.html 矩阵总表同一套数据来源
+    // （data.unitColors / data.specialStatusTypes，都是 getTvBoardWeekData() 里
+    // 一起打包回来的），只列出真的有设色的项目，一个都没有就把整排图例隐藏掉。
+    function renderLegend(data) {
+      const unitGroup = document.getElementById('unitLegendGroup');
+      const unitChips = document.getElementById('unitLegendChips');
+      const unitItems = (data.unitColors || []).filter(function (item) { return HEX_COLOR_RE.test(item.color); });
+      if (unitItems.length > 0) {
+        unitChips.innerHTML = unitItems.map(function (item) {
+          return '<span class="legend-chip"><span class="legend-swatch" style="background:' + item.color + '"></span>' + escapeHtml(item.unit) + '</span>';
+        }).join('');
+        unitGroup.classList.remove('hidden');
+      } else {
+        unitChips.innerHTML = '';
+        unitGroup.classList.add('hidden');
+      }
+
+      const statusGroup = document.getElementById('specialStatusLegendGroup');
+      const statusChips = document.getElementById('specialStatusLegendChips');
+      const statusItems = (data.specialStatusTypes || []).filter(function (item) { return HEX_COLOR_RE.test(item.color); });
+      if (statusItems.length > 0) {
+        statusChips.innerHTML = statusItems.map(function (item) {
+          return '<span class="legend-chip"><span class="legend-swatch" style="background:' + item.color + '"></span>' + escapeHtml(item.name) + '</span>';
+        }).join('');
+        statusGroup.classList.remove('hidden');
+      } else {
+        statusChips.innerHTML = '';
+        statusGroup.classList.add('hidden');
+      }
+    }
+
     function renderBoard(data) {
       boardData = data;
       const todayStr = todayISO();
@@ -573,6 +663,8 @@
       const ws = data.weekStart.split('-'), we = data.weekEnd.split('-');
       document.getElementById('weekRangeLabel').textContent =
         '本周 ' + pad2(ws[2]) + '/' + pad2(ws[1]) + '/' + ws[0] + '-' + pad2(we[2]) + '/' + pad2(we[1]) + '/' + we[0];
+
+      renderLegend(data);
 
       const container = document.getElementById('venuesRow');
       container.innerHTML = '';

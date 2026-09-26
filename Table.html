@@ -114,9 +114,10 @@
             flex: 0 0 70%;
         }
 
-        /* 📢 公告栏：内容来自指定的 Google 文档（见 Code.gs 的 getAnnouncementHtml()），
-           管理员之后只要编辑那份 Google 文档，这里会在页面重新整理/定期刷新时自动跟着更新，
-           不需要碰任何代码 */
+        /* 📢 公告栏：内容来自《公告栏》工作表 A2 格的 Markdown 文本（见 Code.gs 的
+           getAnnouncementContent()），前端用 marked.js 转成 HTML 再显示。管理员在 Admin.html
+           最下方的编辑区（或直接编辑 A2 格）更新内容后，这里会在页面重新整理/定期刷新时
+           自动跟着更新，不需要碰任何代码 */
         .announcement-panel {
             flex: 1 1 0;
             min-width: 260px;
@@ -498,6 +499,10 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- 📢 公告栏内容是 Markdown 语法，用 marked.js 转成 HTML 再显示（marked 预设允许内文
+         直接夹带原生 HTML 标签，所以管理员偶尔想用 Markdown 表达不出来的样式，直接写一段
+         HTML 也一样有效，不算失去弹性） -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.js"></script>
     <script>
         let bookingRecords = [];
         let staticVenues = [];
@@ -570,7 +575,7 @@
             setInterval(loadAnnouncement, 5 * 60 * 1000);
         });
 
-        // 📢 读取右侧公告栏内容（来源：Code.gs 的 getAnnouncementHtml()，读取指定的 Google 文档）
+        // 📢 读取右侧公告栏内容（来源：Code.gs 的 getAnnouncementContent()，读取《公告栏》工作表 A2 格的 Markdown）
         function loadAnnouncement() {
             google.script.run
                 .withSuccessHandler(renderAnnouncement)
@@ -580,7 +585,7 @@
                             err)) + '</div>';
                     document.getElementById('announcementUpdated').textContent = '';
                 })
-                .getAnnouncementHtml();
+                .getAnnouncementContent();
         }
 
         function renderAnnouncement(data) {
@@ -589,21 +594,22 @@
 
             if (!data || !data.configured) {
                 bodyEl.innerHTML =
-                    '<div class="ann-empty">尚未设置公告文档<br>（在 Code.gs 的 ANNOUNCEMENT_DOC_ID 填上 Google 文档 ID 即可启用）</div>';
+                    '<div class="ann-empty">尚未设置公告内容<br>（在《公告栏》工作表的 A2 格贴上 Markdown 内容即可启用）</div>';
                 updatedEl.textContent = '';
                 return;
             }
             if (data.error) {
-                bodyEl.innerHTML = '<div class="ann-error">⚠️ 读取公告文档失败：' + escapeHtml(data.error) + '</div>';
+                bodyEl.innerHTML = '<div class="ann-error">⚠️ 读取公告内容失败：' + escapeHtml(data.error) + '</div>';
                 updatedEl.textContent = '';
                 return;
             }
-            // ⚠️ data.html 是后端 docBodyToHtml() 从 Google 文档内容转换出来的 HTML，
-            // 文字部分已经在后端做过 escapeHtml，这里可以直接信任、放进 innerHTML
-            bodyEl.innerHTML = (data.html && data.html.trim()) ?
-                data.html :
-                '<div class="ann-empty">（公告文档目前是空的）</div>';
-            updatedEl.textContent = data.updated ? ('文档更新于 ' + data.updated) : '';
+            // ⚠️ data.markdown 是管理员写的 Markdown 原文，这里用 marked.js 转成 HTML 再显示——
+            // marked 预设允许内文夹带原生 HTML 标签直接通过，所以效果上跟"信任的 HTML"是同一回事，
+            // 只是这张工作表本来就只有信任的管理员能编辑，风险等级没变
+            bodyEl.innerHTML = (data.markdown && data.markdown.trim()) ?
+                marked.parse(data.markdown) :
+                '<div class="ann-empty">（公告内容目前是空的）</div>';
+            updatedEl.textContent = data.updated ? ('公告更新于 ' + data.updated) : '';
         }
 
         function checkAndRender(counter) {
