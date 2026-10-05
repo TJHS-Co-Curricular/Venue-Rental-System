@@ -16,6 +16,9 @@
             --panel-bg: #ffffff;
             --page-bg: #f6f7fb;
             --today-tint: #eaf2ff;
+            --sticky-col1-w: 64px; /* 矩阵第一栏（课室编号）的固定宽度 */
+            --holiday-tint: #fff59d; /* 🏖️ 假期格子的黄色底 */
+            --holiday-head: #fde047; /* 🏖️ 假期表头的黄色（比格子深一点） */
         }
 
         * {
@@ -274,6 +277,13 @@
             box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
         }
 
+        /* 左上角两个表头格同时是"顶部固定"和"左侧固定"，层级要比表身的固定栏高，
+           否则垂直卷动时表身的场地编号会盖过表头 */
+        .matrix-table th.sticky-left-1,
+        .matrix-table th.sticky-left-2 {
+            z-index: 12;
+        }
+
         .matrix-table tbody tr:hover td {
             background-color: #f5f8ff;
         }
@@ -283,19 +293,26 @@
             background-color: #eef3ff !important;
         }
 
+        /* 🔧 第一栏固定宽度（--sticky-col1-w），第二栏的 left 直接接在它后面。
+           以前第一栏 min-width 50px、第二栏却 left: 30px，横向卷动时第二栏会盖住约 20px 的场地编号 */
         .sticky-left-1 {
             position: sticky;
             left: 0;
             background-color: #fafbfd !important;
             z-index: 11;
-            min-width: 50px;
+            box-sizing: border-box;
+            width: var(--sticky-col1-w);
+            min-width: var(--sticky-col1-w);
+            max-width: var(--sticky-col1-w);
+            overflow: hidden;
+            text-overflow: ellipsis;
             font-weight: 600;
             box-shadow: 2px 0 4px rgba(15, 23, 42, 0.05);
         }
 
         .sticky-left-2 {
             position: sticky;
-            left: 30px;
+            left: var(--sticky-col1-w);
             background-color: #fafbfd !important;
             z-index: 11;
             /* 🔧 班级名称太长会把这一列撑得很宽，改成固定宽度 + 超出省略号，
@@ -364,6 +381,22 @@
 
         .today-cell.weekend-cell {
             background-color: #eef2ff !important;
+        }
+
+        /* 🏖️ 假期（来自《场地编号》表的【假期设定(月)/开始(日期)/结束(日期)】）：整列填黄色底。
+           放在 weekend/today 规则后面，优先级比它们高——假期遇到周末或今天都还是显示黄色
+           （表头的"今天"蓝色标记例外，方便找到今天）。有借用记录的格子用 inline style 染单位色、
+           带 !important，所以会盖过这里的黄色，借用信息不会被假期底色吃掉 */
+        .holiday-header {
+            background-color: var(--holiday-head) !important;
+            color: #854d0e !important;
+            font-weight: 700;
+        }
+
+        .holiday-cell,
+        .holiday-cell.weekend-cell,
+        .holiday-cell.today-cell {
+            background-color: var(--holiday-tint) !important;
         }
 
         .empty-col {
@@ -451,6 +484,12 @@
             <div class="legend-chips" id="specialStatusLegendChips" style="flex:1 1 auto;"></div>
         </div>
 
+        <!-- 🏖️ 当前浏览月份的假期日期（来自《场地编号》表的假期设定），这个月没有假期就整行隐藏 -->
+        <div class="d-flex align-items-center flex-wrap gap-2 mb-3 d-none" id="holidayLegendRow">
+            <span class="fw-bold text-nowrap" style="font-size:20px; color: var(--ink);">🏖️ 假期：</span>
+            <div class="legend-chips" id="holidayLegendChips" style="flex:1 1 auto;"></div>
+        </div>
+
         <div class="content-row">
             <div class="excel-table-wrapper">
                 <table class="matrix-table" id="matrixTable">
@@ -512,9 +551,10 @@
         let specialStatusColorList = []; // 🚧 [{name, color}]，来自《特殊状态》表 A 列的手动列出+上色，图例用
         let specialStatusList = []; // 🚧 当月的特殊状态标记 [{venueCode, venueName, status, color, date}]
         let specialStatusIndex = new Map(); // 🚧 日期+场地 -> 特殊状态数组的索引，跟 recordIndex 是同一个思路
+        let holidaySettings = []; // 🏖️ [{month, start, end}]，来自《场地编号》表的假期设定（每年通用，不分年份）
         const weekdaysMap = ['日', '一', '二', '三', '四', '五', '六'];
         const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i; // 防呆：只接受标准 6 位色码，其他一律当作没设色处理
-        const TOTAL_LOADS = 4; // 页面初始要并行等待的 4 个异步请求：场地列表 / 单位颜色映射 / 特殊状态类型 / 当月记录(含特殊状态标记)
+        const TOTAL_LOADS = 5; // 页面初始要并行等待的 5 个异步请求：场地列表 / 单位颜色映射 / 特殊状态类型 / 假期设定 / 当月记录(含特殊状态标记)
 
         // 🛡️ XSS 防呆：把用户输入的文字转成安全的 HTML 实体，再塞进 innerHTML
         function escapeHtml(str) {
@@ -538,6 +578,12 @@
             let loadCounter = 0;
             google.script.run.withSuccessHandler(function (venues) {
                 staticVenues = venues || [];
+                checkAndRender(++loadCounter);
+            }).withFailureHandler(function (err) {
+                // ⚠️ 以前这里没有失败处理：场地列表一读不到，计数器永远凑不满，
+                // 整页会一直卡在"载入中"的遮罩
+                staticVenues = [];
+                initLoadError = '场地列表载入失败：' + (err && err.message ? err.message : err);
                 checkAndRender(++loadCounter);
             }).getVenuesFromSheet();
 
@@ -564,6 +610,16 @@
                 checkAndRender(++loadCounter);
             }).getSpecialStatusesFromSheet();
 
+            // 🏖️ 拉取《场地编号》表的假期设定（每年通用），矩阵里落在假期的日期整列填黄色。
+            // 只在打开页面时拉一次，之后切换月份直接用这份清单重新算，不用每次再问后端
+            google.script.run.withSuccessHandler(function (list) {
+                holidaySettings = list || [];
+                checkAndRender(++loadCounter);
+            }).withFailureHandler(function () {
+                holidaySettings = [];
+                checkAndRender(++loadCounter);
+            }).getHolidaySettings();
+
             // ⚡ 性能优化：总表一次只看一个月，改成只拉当前所选月份的数据，
             // 不再是每次打开都把系统里所有历史月份的记录一次性全部读出来
             loadRecordsForSelectedMonth(() => checkAndRender(++loadCounter));
@@ -573,7 +629,20 @@
             loadAnnouncement();
             // 页面通常会开着让人一直看，公告文档改了之后，不用重新整理网页也能在几分钟内自动跟上
             setInterval(loadAnnouncement, 5 * 60 * 1000);
+            // 🔄 借用记录也每 5 分钟自动更新一次（以前只更新公告，开着不关的总表看不到新的借用，
+            // 过了午夜"今天"那一列也不会移动）
+            setInterval(refreshMatrixSilently, 5 * 60 * 1000);
         });
+
+        let initLoadError = '';
+        let initialRenderDone = false;
+
+        // 背景刷新：不显示全屏遮罩；正在切换月份时跳过这一次
+        function refreshMatrixSilently() {
+            if (!initialRenderDone) return;
+            if (document.getElementById('loadingOverlay').style.display === 'block') return;
+            loadRecordsForSelectedMonth(renderMatrix);
+        }
 
         // 📢 读取右侧公告栏内容（来源：Code.gs 的 getAnnouncementContent()，读取《公告栏》工作表 A2 格的 Markdown）
         function loadAnnouncement() {
@@ -614,8 +683,15 @@
 
         function checkAndRender(counter) {
             if (counter === TOTAL_LOADS) {
-                renderMatrix();
+                initialRenderDone = true;
                 document.getElementById('loadingOverlay').style.display = 'none';
+                if (initLoadError) {
+                    document.getElementById('tbodyRows').innerHTML =
+                        '<tr><td class="text-danger fw-bold py-4" style="white-space:normal;">⚠️ ' +
+                        escapeHtml(initLoadError) + '<br>请稍后重新整理网页再试一次。</td></tr>';
+                    return;
+                }
+                renderMatrix();
             }
         }
 
@@ -649,6 +725,44 @@
             container.innerHTML = items.map(item =>
                 `<span class="legend-chip"><span class="legend-swatch" style="background:${item.color}"></span>${escapeHtml(item.name)}</span>`
             ).join('');
+            row.classList.remove('d-none');
+        }
+
+        // 🏖️ 算出某个月（monthNum 1~12）里哪几天是假期，回传 Set<日>；超过当月天数的日子会被截掉
+        // （例如假期设定写 02 | 25 | 31，二月只会算到 28/29 号）
+        function getHolidayDaysForMonth(monthNum, daysInMonth) {
+            const days = new Set();
+            holidaySettings.forEach(h => {
+                if (Number(h.month) !== monthNum) return;
+                const from = Math.max(1, Number(h.start));
+                const to = Math.min(daysInMonth, Number(h.end));
+                for (let d = from; d <= to; d++) days.add(d);
+            });
+            return days;
+        }
+
+        // 🏖️ "🏖️ 假期："图例：把当月的假期日子合并成连续区段显示（例如 05/10-14/10），没有假期就整行隐藏
+        function renderHolidayLegend(monthNum, holidayDays) {
+            const row = document.getElementById('holidayLegendRow');
+            const container = document.getElementById('holidayLegendChips');
+            const sorted = Array.from(holidayDays).sort((a, b) => a - b);
+            if (sorted.length === 0) {
+                row.classList.add('d-none');
+                container.innerHTML = '';
+                return;
+            }
+            const pad = n => String(n).padStart(2, '0');
+            const ranges = [];
+            sorted.forEach(d => {
+                const last = ranges[ranges.length - 1];
+                if (last && d === last[1] + 1) last[1] = d;
+                else ranges.push([d, d]);
+            });
+            container.innerHTML = ranges.map(([a, b]) => {
+                const label = a === b ? `${pad(a)}/${pad(monthNum)}` :
+                    `${pad(a)}/${pad(monthNum)}-${pad(b)}/${pad(monthNum)}`;
+                return `<span class="legend-chip"><span class="legend-swatch" style="background:var(--holiday-tint); border:1px solid #eab308;"></span>${label}</span>`;
+            }).join('');
             row.classList.remove('d-none');
         }
 
@@ -696,12 +810,21 @@
 
         // 🚧 同时拉「当月借用记录」和「当月特殊状态标记」这两笔独立的数据，两个都回来了才算完成，
         // 避免矩阵渲染的时候特殊状态数据还没到，格子先漏画一次颜色
+        let monthRequestSeq = 0;
         function loadRecordsForSelectedMonth(callback) {
             const selectedMonth = document.getElementById('monthPicker').value;
+            // 🛡️ 每次请求编号：如果在回应回来之前又切换了月份，旧月份的回应直接丢弃，
+            // 不会盖掉新月份的资料（以前可能出现"选了 10 月却显示 9 月的格子"）
+            const mySeq = ++monthRequestSeq;
             let pending = 2;
+            let nextRecords = [];
+            let nextStatuses = [];
             const finishOne = function () {
                 pending--;
                 if (pending === 0) {
+                    if (mySeq !== monthRequestSeq) return;
+                    bookingRecords = nextRecords;
+                    specialStatusList = nextStatuses;
                     updateRefreshTimeDisplay();
                     if (callback) callback();
                 }
@@ -709,23 +832,28 @@
 
             google.script.run
                 .withSuccessHandler(function (records) {
-                    bookingRecords = records || [];
+                    nextRecords = records || [];
                     finishOne();
                 })
                 .withFailureHandler(function (err) {
+                    // 背景自动刷新失败时不跳警告，保留原本画面，下次再试
+                    if (initialRenderDone && document.getElementById('loadingOverlay').style.display !== 'block') {
+                        pending = -1;
+                        return;
+                    }
                     alert('读取记录失败: ' + (err && err.message ? err.message : err));
-                    bookingRecords = [];
+                    nextRecords = [];
                     finishOne();
                 })
                 .readRecordsForMonth(selectedMonth);
 
             google.script.run
                 .withSuccessHandler(function (list) {
-                    specialStatusList = list || [];
+                    nextStatuses = list || [];
                     finishOne();
                 })
                 .withFailureHandler(function () {
-                    specialStatusList = [];
+                    nextStatuses = [];
                     finishOne();
                 })
                 .readSpecialStatusForMonth(selectedMonth);
@@ -777,6 +905,9 @@
 
             const [year, month] = selectedMonth.split('-');
             const daysInMonth = new Date(year, month, 0).getDate();
+            // 🏖️ 这个月哪几天是假期（假期设定每年通用，所以只看月份，不看年份）
+            const holidayDays = getHolidayDaysForMonth(parseInt(month, 10), daysInMonth);
+            renderHolidayLegend(parseInt(month, 10), holidayDays);
 
             // 🆕 找出"今天"是几号（只有在浏览的月份正好是本月时才会命中），方便在矩阵里高亮整列
             const today = new Date();
@@ -800,17 +931,20 @@
                 const dayOfWeek = dateObj.getDay();
                 const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
                 const isToday = isViewingCurrentMonth && d === today.getDate();
+                const isHoliday = holidayDays.has(d);
                 let headClass = 'day-col';
                 if (isToday) headClass += ' today-header';
+                else if (isHoliday) headClass += ' holiday-header';
                 else if (isWeekend) headClass += ' weekend-header';
-                headHtml += `<th class="${headClass}">${d}<br>${weekdaysMap[dayOfWeek]}</th>`;
+                const headTitle = isHoliday ? ' title="🏖️ 假期"' : '';
+                headHtml += `<th class="${headClass}"${headTitle}>${d}<br>${weekdaysMap[dayOfWeek]}</th>`;
             }
             thead.innerHTML = headHtml;
 
             staticVenues.forEach(venue => {
                 const venueNameSafe = escapeHtml(venue.name || '');
                 let rowHtml =
-                    `<td class="sticky-left-1">${venue.code}</td><td class="sticky-left-2" title="${venueNameSafe}">${venueNameSafe}</td>`;
+                    `<td class="sticky-left-1" title="${escapeHtml(venue.code)}">${escapeHtml(venue.code)}</td><td class="sticky-left-2" title="${venueNameSafe}">${venueNameSafe}</td>`;
 
                 for (let day = 1; day <= 31; day++) {
                     if (day > daysInMonth) {
@@ -827,6 +961,7 @@
                     let cellClasses = [];
                     if (isWeekend) cellClasses.push('weekend-cell');
                     if (currentCheckDate === todayDateStr) cellClasses.push('today-cell');
+                    if (holidayDays.has(day)) cellClasses.push('holiday-cell'); // 🏖️ 假期整列填黄色
 
                     // ⚡ 改用索引查表（O(1)），不再对每一格都重新过滤一遍全部记录
                     const matches = recordIndex.get(currentCheckDate + '|' + venue.code) || [];
@@ -870,7 +1005,8 @@
                             '#f59e0b';
                         styleParts.push(`box-shadow: inset 0 0 0 3px ${firstColor}`);
                         if (matches.length === 0) {
-                            styleParts.push(`background-color:${firstColor}26`); // 没有借用记录时，用状态色打一层淡淡的底
+                            // 没有借用记录时，用状态色打一层淡淡的底（要 !important，不然会被周末/今天/假期的底色盖掉）
+                            styleParts.push(`background-color:${firstColor}26 !important`);
                         }
                         titleAttr = ` title="🚧 ${escapeHtml(statusMatches.map(s => s.status).join('、'))}"`;
                         badgeHtml =
@@ -883,7 +1019,7 @@
                             'position:relative'); // 🚧 图示用绝对定位贴右上角，格子本身要先有个定位基准
                         const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join('; ')};"` : '';
                         rowHtml +=
-                            `<td class="${cellClasses.join(' ')}"${styleAttr}${titleAttr} onclick="showBookingModal('${venue.code}', '${venue.name || ''}', '${currentCheckDate}')">${badgeHtml}</td>`;
+                            `<td class="${cellClasses.join(' ')}"${styleAttr}${titleAttr} data-venue="${escapeHtml(venue.code)}" data-date="${currentCheckDate}">${badgeHtml}</td>`;
                     } else {
                         rowHtml += `<td class="${cellClasses.join(' ')}"></td>`;
                     }
@@ -893,7 +1029,15 @@
             });
         }
 
-        function showBookingModal(venueCode, venueName, dateStr) {
+        // 🛡️ 点格子看明细：用事件委派 + data-venue / data-date 属性，不把场地名称拼进 onclick 字符串
+        // （以前场地名称里只要有单引号，例如 Teacher's Room，整排格子都点不开）
+        document.getElementById('tbodyRows').addEventListener('click', function (e) {
+            const cell = e.target.closest('td.clickable-cell');
+            if (!cell || !cell.dataset.venue) return;
+            showBookingModal(cell.dataset.venue, cell.dataset.date);
+        });
+
+        function showBookingModal(venueCode, dateStr) {
             const matches = recordIndex.get(dateStr + '|' + venueCode) || [];
             const statusMatches = specialStatusIndex.get(dateStr + '|' + venueCode) || [];
 
@@ -946,8 +1090,7 @@
                 modalBody.insertAdjacentHTML('beforeend', blockHtml);
             });
 
-            const myModal = new bootstrap.Modal(document.getElementById('bookingDetailModal'));
-            myModal.show();
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('bookingDetailModal')).show();
         }
     </script>
 </body>

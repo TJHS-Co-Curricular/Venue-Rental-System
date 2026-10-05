@@ -107,6 +107,44 @@
       font-weight: bold;
     }
 
+    /* ✅ 操作成功/提示用的小浮动通知（不会挡住画面，几秒后自动消失） */
+    .toast-stack {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 10000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 420px;
+    }
+
+    .app-toast {
+      background: #198754;
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+      font-size: 14px;
+      font-weight: 600;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    .app-toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .app-toast.toast-info {
+      background: #0d6efd;
+    }
+
+    .app-toast.toast-warn {
+      background: #b45309;
+    }
+
     .status-swatch {
       display: inline-block;
       width: 10px;
@@ -139,6 +177,13 @@
             title="点击在新窗口打开">点击</button>
         </div>
       </div>
+    </div>
+
+    <!-- ⚠️ 载入失败时显示在这里（附"重试"按钮），不会让画面卡在"载入中"的遮罩 -->
+    <div class="alert alert-danger d-none d-flex justify-content-between align-items-center gap-3" id="pageErrorBanner"
+      role="alert">
+      <span id="pageErrorText"></span>
+      <button type="button" class="btn btn-sm btn-light fw-bold" id="pageErrorRetryBtn">🔄 重试</button>
     </div>
 
     <div class="row">
@@ -264,7 +309,16 @@
               <span class="fw-bold">借用记录列表</span>
               <span class="badge bg-secondary ms-2" id="tableCountNotice" style="font-size: 11px;"></span>
             </div>
-            <div class="d-flex align-items-center gap-2">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <!-- ⚡ 资料范围：预设只读最近的记录（3 个月前那个月起，含未来），年份越积越多也不会越来越慢；
+                   要查更早的记录再切换成"最近 12 个月"或"全部" -->
+              <label class="small text-white-50 fw-bold m-0 text-nowrap" for="dataRangeSelect">资料范围</label>
+              <select id="dataRangeSelect" class="form-select form-select-sm" style="width:auto;"
+                onchange="loadData()">
+                <option value="recent" selected>近期（3 个月前起）</option>
+                <option value="year">最近 12 个月起</option>
+                <option value="all">全部记录（较慢）</option>
+              </select>
               <!-- 🆕 每页显示笔数：一次最多渲染这么多行，超过就分页，避免记录一多网页就卡 -->
               <label class="small text-white-50 fw-bold m-0 text-nowrap" for="pageSizeSelect">每页显示</label>
               <select id="pageSizeSelect" class="form-select form-select-sm" style="width:auto;"
@@ -381,7 +435,7 @@
               <span class="text-secondary ms-2" id="announcementEditorUpdatedNote" style="font-size: 12px;"></span>
             </div>
             <div class="d-flex align-items-center gap-2">
-              <button class="btn btn-outline-secondary btn-sm" type="button" onclick="loadAnnouncementEditor()">🔄
+              <button class="btn btn-outline-secondary btn-sm" type="button" onclick="reloadAnnouncementEditor()">🔄
                 重新载入</button>
               <button class="btn btn-primary btn-sm fw-bold" type="button" onclick="saveAnnouncementEditor()">💾
                 保存公告</button>
@@ -411,6 +465,8 @@
       </div>
     </div>
   </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
   <div class="loading-overlay" id="loadingOverlay">
     <div class="loading-box">
@@ -515,15 +571,120 @@
         .replace(/'/g, '&#039;');
     }
 
-    document.addEventListener('DOMContentLoaded', function () {
-      google.script.run.withSuccessHandler(function (url) {
-        if (url && url.indexOf('http') === 0) {
-          document.getElementById('viewerLinkUrl').value = url + "?page=view";
-          document.getElementById('tableLinkUrl').value = url + "?page=table";
-        }
-      }).getWebAppUrl();
+    // 📅 本地时区的今天 "yyyy-MM-dd"。不能用 input.valueAsDate = new Date()——那是按 UTC 算日期，
+    // 马来西亚 (UTC+8) 每天 00:00–08:00 会显示成昨天。（实际存进表格的填写日期由服务器决定）
+    function localTodayIso() {
+      const d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
 
-      document.getElementById('fillDate').valueAsDate = new Date();
+    // 记录所在的月份工作表（"yyyy-MM"），删除/修改时带给后端当提示，后端就不用扫描所有月份表
+    function recordMonthKey(item) {
+      return item && item.使用日期 ? String(item.使用日期).substring(0, 7) : '';
+    }
+
+    // ✅ 成功提示：右下角浮动通知，几秒后自动消失，不会打断操作
+    function showToast(message, type) {
+      const stack = document.getElementById('toastStack');
+      const el = document.createElement('div');
+      el.className = 'app-toast' + (type ? ' toast-' + type : '');
+      el.textContent = message;
+      stack.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      setTimeout(() => {
+        el.classList.remove('show');
+        setTimeout(() => el.remove(), 300);
+      }, type === 'warn' ? 6000 : 3500);
+    }
+
+    // ⚠️ 载入失败：关掉遮罩，在页面上方显示错误 + 重试按钮（以前会永远卡在"载入中"）
+    function showPageError(message, retryFn) {
+      showLoading(false);
+      const banner = document.getElementById('pageErrorBanner');
+      document.getElementById('pageErrorText').textContent = message;
+      const btn = document.getElementById('pageErrorRetryBtn');
+      btn.onclick = function () {
+        hidePageError();
+        if (retryFn) retryFn();
+      };
+      banner.classList.remove('d-none');
+    }
+
+    function hidePageError() {
+      document.getElementById('pageErrorBanner').classList.add('d-none');
+    }
+
+    // 🛡️ 防重复提交：同一时间只允许一个写入请求在跑（以前遮罩挡得住鼠标但挡不住键盘 Enter，
+    // 请求还没回来再按一次就会送出第二笔）
+    let writeInFlight = false;
+    function beginWrite(loadingMsg) {
+      if (writeInFlight) return false;
+      writeInFlight = true;
+      ['submitBtn', 'submitSpecialStatusBtn', 'batchDeleteBtn', 'batchCancelSpecialStatusBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = true;
+      });
+      showLoading(true, loadingMsg);
+      return true;
+    }
+
+    function endWrite() {
+      writeInFlight = false;
+      ['submitBtn', 'submitSpecialStatusBtn', 'batchDeleteBtn', 'batchCancelSpecialStatusBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = false;
+      });
+      showLoading(false);
+    }
+
+    // 算出这次提交会展开成几天（跟后端 expandDates_ 同一套规则），用来提早提醒"日期范围是不是打错了"
+    const MAX_RECORDS_PER_SUBMIT = 200; // 跟 Code.gs 的同名常量一致，后端也会再挡一次
+    const CONFIRM_RECORDS_THRESHOLD = 50;
+    function countSubmitDays(useDate, endDate, recurWeekdays) {
+      if (!useDate) return 0;
+      const p = useDate.split('-').map(Number);
+      const start = new Date(p[0], p[1] - 1, p[2]);
+      let end = start;
+      if (endDate) {
+        const q = endDate.split('-').map(Number);
+        end = new Date(q[0], q[1] - 1, q[2]);
+      }
+      if (end < start) return 0;
+      const recurSet = recurWeekdays && recurWeekdays.length ? new Set(recurWeekdays) : null;
+      let n = 0;
+      for (const d = new Date(start); d <= end && n <= 1000; d.setDate(d.getDate() + 1)) {
+        if (!recurSet || recurSet.has(d.getDay())) n++;
+      }
+      return n;
+    }
+
+    // 共用的日期/数量检查（一般借用记录、特殊状态都用）。回传 false 代表要中止提交。
+    function confirmSubmitSize(totalRecords, kindLabel) {
+      if (totalRecords > MAX_RECORDS_PER_SUBMIT) {
+        alert(`⚠️ 这次会产生 ${totalRecords} 笔${kindLabel}，超过单次上限 ${MAX_RECORDS_PER_SUBMIT} 笔。\n请检查「结束日期」有没有打错（例如年份），或分批提交。`);
+        return false;
+      }
+      if (totalRecords > CONFIRM_RECORDS_THRESHOLD) {
+        return confirm(`这次会一次产生 ${totalRecords} 笔${kindLabel}，确定日期范围没有打错吗？`);
+      }
+      return true;
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      google.script.run
+        .withSuccessHandler(function (url) {
+          if (url && url.indexOf('http') === 0) {
+            document.getElementById('viewerLinkUrl').value = url + "?page=view";
+            document.getElementById('tableLinkUrl').value = url + "?page=table";
+          }
+        })
+        .withFailureHandler(function () {
+          document.getElementById('viewerLinkUrl').value = '（无法取得网址，请重新整理）';
+          document.getElementById('tableLinkUrl').value = '（无法取得网址，请重新整理）';
+        })
+        .getWebAppUrl();
+
+      document.getElementById('fillDate').value = localTodayIso();
       loadVenueDropdown();
       loadUnitDropdown();
       loadSpecialStatusTypes();
@@ -534,12 +695,26 @@
     // 📢 矩阵总表公告栏：内容实际存在《公告栏》工作表 A2 格（跟 Table.html 读取的是
     // 同一份），这里只是提供一个大文本框方便管理员编辑，不用再挤在 Google Sheets
     // 小格子里打字。保存/载入都直接对同一格做，不涉及其他任何栏位。
+    let announcementLoadedValue = ''; // 最后一次从后端载入/保存的内容，用来判断有没有未保存的修改
+    let announcementSaving = false;
+
+    // 「🔄 重新载入」按钮：有还没保存的修改时先确认，避免一按就把正在写的内容丢掉
+    function reloadAnnouncementEditor() {
+      const current = document.getElementById('announcementMarkdownInput').value;
+      if (current !== announcementLoadedValue &&
+        !confirm('公告内容有还没保存的修改，重新载入会丢掉这些修改。确定要重新载入吗？')) {
+        return;
+      }
+      loadAnnouncementEditor();
+    }
+
     function loadAnnouncementEditor() {
       const statusEl = document.getElementById('announcementEditorStatus');
       statusEl.textContent = '正在载入目前的公告内容...';
       google.script.run
         .withSuccessHandler(function (data) {
           const markdown = (data && data.markdown) ? data.markdown : '';
+          announcementLoadedValue = markdown;
           document.getElementById('announcementMarkdownInput').value = markdown;
           updateAnnouncementPreview();
           document.getElementById('announcementEditorUpdatedNote').textContent =
@@ -564,16 +739,22 @@
     }
 
     function saveAnnouncementEditor() {
+      if (announcementSaving) return;
       const markdown = document.getElementById('announcementMarkdownInput').value;
       const statusEl = document.getElementById('announcementEditorStatus');
       statusEl.textContent = '正在保存...';
+      announcementSaving = true;
       google.script.run
         .withSuccessHandler(function (result) {
+          announcementSaving = false;
+          announcementLoadedValue = markdown;
           statusEl.textContent = '✅ 已保存';
+          showToast('✅ 公告已保存，矩阵总表最多 5 分钟内会更新');
           document.getElementById('announcementEditorUpdatedNote').textContent =
             (result && result.updated) ? ('最后更新于 ' + result.updated) : '';
         })
         .withFailureHandler(function (err) {
+          announcementSaving = false;
           statusEl.textContent = '⚠️ 保存失败：' + formatOpError(err);
         })
         .saveAnnouncementContent(markdown);
@@ -640,12 +821,29 @@
         alert("⚠️ 请先选择「场地使用日期」！");
         return;
       }
-      const endDateVal = document.getElementById('endDate').value;
-      const recurModeOn = document.getElementById('recurModeCheckbox').checked;
+      // 编辑借用记录时「结束日期/按星期重复」区块是隐藏的，这时只标记单日，不用看不见的设定
+      const editing = !!document.getElementById('recordId').value;
+      const endDateVal = editing ? '' : document.getElementById('endDate').value;
+      const recurModeOn = !editing && document.getElementById('recurModeCheckbox').checked;
       if (recurModeOn && recurSelectedWeekdays.size === 0) {
         alert("⚠️ 已开启「按星期重复」，请至少勾选一个要重复的星期几。");
         return;
       }
+      if (recurModeOn && !endDateVal) {
+        alert("⚠️ 使用「按星期重复」功能时，必须填写「结束日期」，用来限定重复的范围。");
+        return;
+      }
+      if (endDateVal && endDateVal < useDateVal) {
+        alert("⚠️ 「结束日期」不能早于「场地使用日期」，请检查日期。");
+        return;
+      }
+      const recurList = recurModeOn ? Array.from(recurSelectedWeekdays) : null;
+      const days = countSubmitDays(useDateVal, endDateVal, recurList);
+      if (days === 0) {
+        alert("⚠️ 所选日期范围内找不到任何符合条件的日期，请检查日期或星期几设置。");
+        return;
+      }
+      if (!confirmSubmitSize(days * checkedVenues.length * selectedSpecialStatuses.size, '特殊状态标记')) return;
 
       const payload = {
         venues: checkedVenues,
@@ -653,19 +851,19 @@
         useDate: useDateVal,
         endDate: endDateVal
       };
-      if (recurModeOn) payload.recurWeekdays = Array.from(recurSelectedWeekdays);
+      if (recurList) payload.recurWeekdays = recurList;
 
-      showLoading(true, "正在提交特殊状态...");
+      if (!beginWrite("正在提交特殊状态...")) return;
       google.script.run
         .withSuccessHandler(function (res) {
-          showLoading(false);
-          alert(`✅ 已新增 ${res.count} 笔特殊状态标记。`);
+          endWrite();
+          showToast(`✅ 已新增 ${res.count} 笔特殊状态标记`);
           selectedSpecialStatuses.clear();
           renderSpecialStatusChips();
           loadSpecialStatusList();
         })
         .withFailureHandler(function (err) {
-          showLoading(false);
+          endWrite();
           alert(formatOpError(err));
         })
         .createSpecialStatusEntries(payload);
@@ -693,29 +891,36 @@
         updateBatchCancelSpecialStatusButtonState();
         return;
       }
-      tbody.innerHTML = list.map(item => `
-      <tr>
-        <td class="chk-cell"><input type="checkbox" class="form-check-input special-status-row-checkbox" value="${item.id}" onclick="handleSpecialStatusRowCheckboxClick()"></td>
+      // 🛡️ 用 addEventListener 绑定按钮，不把表格里的资料拼进 onclick="...('xxx')" 字符串里
+      // （资料里有引号就会让按钮失效，甚至被当成程序码执行）
+      tbody.innerHTML = '';
+      list.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+        <td class="chk-cell"><input type="checkbox" class="form-check-input special-status-row-checkbox" value="${escapeHtml(item.id)}"></td>
         <td>${escapeHtml(item.date)}</td>
         <td>${escapeHtml(item.venueCode)}${item.venueName ? ' (' + escapeHtml(item.venueName) + ')' : ''}</td>
         <td><span class="fw-bold" style="color:#b45309;">${escapeHtml(item.status)}</span></td>
         <td class="text-muted small">${escapeHtml(item.filler)}</td>
-        <td><button class="btn btn-outline-danger btn-xs" onclick="deleteSpecialStatus('${item.id}')">取消状态</button></td>
-      </tr>
-    `).join('');
+        <td><button type="button" class="btn btn-outline-danger btn-xs">取消状态</button></td>`;
+        tr.querySelector('.special-status-row-checkbox').addEventListener('click', handleSpecialStatusRowCheckboxClick);
+        tr.querySelector('button').addEventListener('click', () => deleteSpecialStatus(item.id));
+        tbody.appendChild(tr);
+      });
       updateBatchCancelSpecialStatusButtonState();
     }
 
     function deleteSpecialStatus(id) {
       if (!confirm('确定要取消这笔特殊状态标记吗？')) return;
-      showLoading(true, "正在取消中...");
+      if (!beginWrite("正在取消中...")) return;
       google.script.run
         .withSuccessHandler(function () {
-          showLoading(false);
+          endWrite();
+          showToast('✅ 已取消特殊状态标记');
           loadSpecialStatusList();
         })
         .withFailureHandler(function (err) {
-          showLoading(false);
+          endWrite();
           alert(formatOpError(err));
         })
         .deleteSpecialStatusEntries([id]);
@@ -757,14 +962,15 @@
 
       if (!confirm(`确定要批量取消这 ${count} 笔特殊状态标记吗？`)) return;
 
-      showLoading(true, `正在批量取消 ${count} 笔特殊状态标记...`);
+      if (!beginWrite(`正在批量取消 ${count} 笔特殊状态标记...`)) return;
       google.script.run
-        .withSuccessHandler(function () {
-          showLoading(false);
+        .withSuccessHandler(function (res) {
+          endWrite();
+          showToast(`✅ 已取消 ${res && res.count != null ? res.count : count} 笔特殊状态标记`);
           loadSpecialStatusList();
         })
         .withFailureHandler(function (err) {
-          showLoading(false);
+          endWrite();
           alert(formatOpError(err));
         })
         .deleteSpecialStatusEntries(selectedIds);
@@ -785,6 +991,10 @@
             option.textContent = u;
             unitSelect.appendChild(option);
           });
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('unit').innerHTML =
+            '<option value="" disabled selected>⚠️ 单位列表载入失败，请重新整理网页</option>';
         })
         .getUnitsFromSheet();
     }
@@ -819,20 +1029,23 @@
           renderVenueGridTiles();
           loadData();
         })
+        .withFailureHandler(function (err) {
+          document.getElementById('venueCheckboxContainer').innerHTML =
+            '<div class="text-danger small text-center py-3">⚠️ 场地列表载入失败</div>';
+          showPageError('⚠️ 无法载入场地列表：' + formatOpError(err), loadVenueDropdown);
+        })
         .getVenuesFromSheet();
     }
+
+    // 场地编号 → {tile, input}：用这个对照表找方块，不再把场地编号拼进 id / CSS 选择器 / onclick 字符串
+    // （场地编号如果含引号或特殊符号，旧写法会让勾选失效）
+    let venueTileRefs = new Map();
 
     function renderVenueGridTiles() {
       const container = document.getElementById('venueCheckboxContainer');
       container.innerHTML = '';
-      const filteredVenues = venueOptions.filter(v => {
-        const codeStr = String(v.code || '').trim();
-        const nameStr = String(v.name || '').trim();
-        const blockKey = getBlockGroupKey(codeStr, nameStr);
-        return (activeBlockFilter === 'ALL' || blockKey === activeBlockFilter) &&
-          (activeSearchQuery === '' || codeStr.toLowerCase().includes(activeSearchQuery) || nameStr.toLowerCase()
-            .includes(activeSearchQuery));
-      });
+      venueTileRefs = new Map();
+      const filteredVenues = getCurrentFilteredVenues();
       if (filteredVenues.length === 0) {
         container.style.display = 'block';
         container.innerHTML = '<div class="text-muted small text-center py-3">没有找到匹配的场地选项</div>';
@@ -845,26 +1058,44 @@
       filteredVenues.forEach((v, index) => {
         const codeStr = String(v.code || '').trim();
         const nameStr = String(v.name || '').trim();
-        let hasSelected = globalSelectedVenues.has(codeStr);
-        let fullTitle = (!nameStr || nameStr === codeStr) ? codeStr : `${codeStr} (${nameStr})`;
+        const hasSelected = globalSelectedVenues.has(codeStr);
         const tileDiv = document.createElement('div');
         tileDiv.className = `venue-tile ${hasSelected ? 'active-selected' : ''}`;
-        tileDiv.title = fullTitle;
-        tileDiv.id = `tile_${codeStr}`;
-        tileDiv.innerHTML = `
-        <input class="form-check-input venue-checkbox me-2" type="checkbox" value="${codeStr}" id="chkVenue_${index}" ${hasSelected ? 'checked' : ''} onclick="handleTileCheckedClick('${codeStr}', this, event)">
-        <label class="form-check-label fw-bold small m-0" for="chkVenue_${index}" style="cursor:pointer;">${codeStr}</label>
-      `;
-        tileDiv.onclick = function (e) {
+        tileDiv.title = (!nameStr || nameStr === codeStr) ? codeStr : `${codeStr} (${nameStr})`;
+
+        const inputEl = document.createElement('input');
+        inputEl.className = 'form-check-input venue-checkbox me-2';
+        inputEl.type = 'checkbox';
+        inputEl.value = codeStr;
+        inputEl.id = `chkVenue_${index}`;
+        inputEl.checked = hasSelected;
+        inputEl.addEventListener('click', (e) => handleTileCheckedClick(codeStr, inputEl, e));
+
+        const labelEl = document.createElement('label');
+        labelEl.className = 'form-check-label fw-bold small m-0';
+        labelEl.htmlFor = inputEl.id;
+        labelEl.style.cursor = 'pointer';
+        labelEl.textContent = codeStr;
+
+        tileDiv.appendChild(inputEl);
+        tileDiv.appendChild(labelEl);
+        tileDiv.addEventListener('click', function (e) {
           if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'LABEL') {
-            const inputEl = tileDiv.querySelector('input');
             inputEl.checked = !inputEl.checked;
             handleTileCheckedClick(codeStr, inputEl, e);
           }
-        };
+        });
+        venueTileRefs.set(codeStr, { tile: tileDiv, input: inputEl });
         container.appendChild(tileDiv);
       });
       syncGroupSelectAllState(filteredVenues);
+    }
+
+    function setVenueTileState(codeStr, checked) {
+      const ref = venueTileRefs.get(codeStr);
+      if (!ref) return;
+      ref.input.checked = checked;
+      ref.tile.classList.toggle('active-selected', checked);
     }
 
     function handleTileCheckedClick(codeStr, inputElement, event) {
@@ -874,28 +1105,21 @@
       if (isEditMode && inputElement.checked) {
         Array.from(globalSelectedVenues).forEach(oldCode => {
           if (oldCode === codeStr) return;
-          const oldTile = document.getElementById(`tile_${oldCode}`);
-          const oldInput = document.querySelector(`.venue-checkbox[value="${oldCode}"]`);
-          if (oldInput) oldInput.checked = false;
-          if (oldTile) oldTile.classList.remove('active-selected');
+          setVenueTileState(oldCode, false);
           globalSelectedVenues.delete(oldCode);
         });
       }
-      const tile = document.getElementById(`tile_${codeStr}`);
-      if (inputElement.checked) {
-        globalSelectedVenues.add(codeStr);
-        if (tile) tile.classList.add('active-selected');
-      } else {
-        globalSelectedVenues.delete(codeStr);
-        if (tile) tile.classList.remove('active-selected');
-      }
+      if (inputElement.checked) globalSelectedVenues.add(codeStr);
+      else globalSelectedVenues.delete(codeStr);
+      setVenueTileState(codeStr, inputElement.checked);
       syncGroupSelectAllState(getCurrentFilteredVenues());
     }
 
     function handleBlockFilterChange(blockKey) {
       activeBlockFilter = blockKey;
       document.querySelectorAll('#venueBlockGroupFilters button').forEach(btn => btn.classList.remove('active'));
-      document.getElementById(`btnBlock_${blockKey}`).classList.add('active');
+      const btn = document.getElementById(`btnBlock_${blockKey}`);
+      if (btn) btn.classList.add('active');
       renderVenueGridTiles();
     }
 
@@ -934,24 +1158,19 @@
       const currentList = getCurrentFilteredVenues();
       currentList.forEach(v => {
         const codeStr = String(v.code).trim();
-        const inputEl = document.querySelector(`.venue-checkbox[value="${codeStr}"]`);
-        const tile = document.getElementById(`tile_${codeStr}`);
-        if (masterCanvas.checked) {
-          globalSelectedVenues.add(codeStr);
-          if (inputEl) inputEl.checked = true;
-          if (tile) tile.classList.add('active-selected');
-        } else {
-          globalSelectedVenues.delete(codeStr);
-          if (inputEl) inputEl.checked = false;
-          if (tile) tile.classList.remove('active-selected');
-        }
+        if (masterCanvas.checked) globalSelectedVenues.add(codeStr);
+        else globalSelectedVenues.delete(codeStr);
+        setVenueTileState(codeStr, masterCanvas.checked);
       });
     }
 
     function loadData() {
       showLoading(true, "正在读取现有借用记录...");
+      hidePageError();
+      const range = document.getElementById('dataRangeSelect').value || 'recent';
       google.script.run
         .withSuccessHandler(function (data) {
+          data = data || [];
           rawData = data;
           // 🛡️ 数据重新整份拉回来了（新增/修改/删除之后都会走这），把 selectedRecordIds 里
           // 已经不存在的 ID 清掉，避免残留指向已删除记录的勾选
@@ -962,7 +1181,10 @@
           renderTable(data);
           showLoading(false);
         })
-        .readRecords();
+        .withFailureHandler(function (err) {
+          showPageError('⚠️ 借用记录载入失败：' + formatOpError(err), loadData);
+        })
+        .readRecordsForAdmin(range);
     }
 
     function renderTable(data) {
@@ -1031,7 +1253,7 @@
         // 🛡️ checkbox 是否打勾看 selectedRecordIds 这个跨页集合，不是每次重新归零
         const isChecked = selectedRecordIds.has(item.ID);
         trElement.innerHTML = `
-        <td class="chk-cell"><input type="checkbox" class="form-check-input row-checkbox" value="${escapeHtml(item.ID)}" ${isChecked ? 'checked' : ''} onclick="handleRowCheckboxClick(this)"></td>
+        <td class="chk-cell"><input type="checkbox" class="form-check-input row-checkbox" value="${escapeHtml(item.ID)}" ${isChecked ? 'checked' : ''}></td>
         <td class="text-success fw-bold">${escapeHtml(useD)}</td>
         <td><span class="badge bg-info text-dark">${escapeHtml(venueDisplay)}</span></td>
         <td><strong>${escapeHtml(item.活动)}</strong></td>
@@ -1040,11 +1262,17 @@
         <td>${escapeHtml(item.填写人) || '无'}</td>
         <td class="text-primary">${escapeHtml(fillD)}</td>
         <td>
-          <button class="btn btn-sm btn-warning me-1" onclick="editRow('${item.ID}')">编辑</button>
-          <button class="btn btn-sm btn-outline-secondary me-1" onclick="selectSameBatch('${item.系统时间戳}')" title="勾选同一次提交的所有记录，方便整批删除/重建">🔗同批</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteRow('${item.ID}')">删除</button>
+          <button type="button" class="btn btn-sm btn-warning me-1 act-edit">编辑</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary me-1 act-batch" title="勾选同一次提交的所有记录，方便整批删除/重建">🔗同批</button>
+          <button type="button" class="btn btn-sm btn-danger act-delete">删除</button>
         </td>
       `;
+        // 🛡️ 用 addEventListener 绑定，不把记录 ID / 时间戳拼进 onclick 字符串
+        const cb = trElement.querySelector('.row-checkbox');
+        cb.addEventListener('click', () => handleRowCheckboxClick(cb));
+        trElement.querySelector('.act-edit').addEventListener('click', () => editRow(item.ID));
+        trElement.querySelector('.act-batch').addEventListener('click', () => selectSameBatch(item.系统时间戳));
+        trElement.querySelector('.act-delete').addEventListener('click', () => deleteRow(item.ID));
         tbody.appendChild(trElement);
       });
 
@@ -1147,17 +1375,45 @@
         return;
       }
 
-      showLoading(true, `验证通过！正在服务器中擦除 ${count} 条记录，请稍候...`);
+      if (!beginWrite(`验证通过！正在服务器中擦除 ${count} 条记录，请稍候...`)) return;
       google.script.run
-        .withSuccessHandler(function () {
+        .withSuccessHandler(function (res) {
+          endWrite();
           selectedRecordIds.clear();
-          loadData();
+          afterRecordsDeleted(selectedIds, res);
         })
         .withFailureHandler(function (err) {
+          endWrite();
           alert(formatOpError(err));
-          showLoading(false);
         })
-        .batchDeleteRecords(selectedIds);
+        .batchDeleteRecords(selectedIds, monthHintsForIds(selectedIds));
+    }
+
+    // 要删除/修改的记录大概在哪几个月份表，带给后端当提示（找不到时后端会自动扫描全部）
+    function monthHintsForIds(ids) {
+      const idSet = new Set(ids);
+      const months = new Set();
+      rawData.forEach(item => {
+        if (idSet.has(item.ID)) {
+          const mk = recordMonthKey(item);
+          if (mk) months.add(mk);
+        }
+      });
+      return Array.from(months);
+    }
+
+    // 删除成功后：提示删了几笔；如果正在编辑的那一笔也被删掉了，自动退出编辑模式
+    // （以前会留在编辑模式，再按"保存修改"会把已删除的记录"复活"）
+    function afterRecordsDeleted(ids, res) {
+      const editingId = document.getElementById('recordId').value;
+      const deletedCount = res && res.count != null ? res.count : ids.length;
+      if (editingId && ids.indexOf(editingId) > -1) {
+        resetForm();
+        showToast(`🗑️ 已删除 ${deletedCount} 条记录（正在编辑的那一笔也被删除，已退出编辑模式）`, 'warn');
+      } else {
+        showToast(`🗑️ 已删除 ${deletedCount} 条记录`);
+      }
+      loadData();
     }
 
     // 🔗 批次关联：同一次提交（连续多天 / 多场地）会共享完全相同的"系统时间戳"，
@@ -1187,76 +1443,100 @@
 
     document.getElementById('bookingForm').addEventListener('submit', function (e) {
       e.preventDefault();
-      showLoading(true, "正在提交中...");
+      if (writeInFlight) return; // 🛡️ 上一个请求还没回来（例如连按 Enter），不重复送出
       const checkedVenues = Array.from(globalSelectedVenues);
       if (checkedVenues.length === 0) {
         alert("⚠️ 请至少勾选一个需要借用的场地！");
-        showLoading(false);
         return;
       }
-      const id0 = document.getElementById('recordId').value;
-      if (id0 && checkedVenues.length > 1) {
+      const id = document.getElementById('recordId').value;
+      if (id && checkedVenues.length > 1) {
         // 🛡️ 双重保险：编辑模式理论上 UI 已锁定单选，这里再拦一次，避免任何遗漏路径导致其余场地被后端悄悄丢弃
         alert("⚠️ 修改单笔记录时场地只能选一个，请取消多余的勾选。");
-        showLoading(false);
         return;
       }
       const timeStartVal = document.getElementById('timeStart').value;
       const timeEndVal = document.getElementById('timeEnd').value;
       if (!timeStartVal || !timeEndVal) {
         alert("⚠️ 请填写完整的借用开始与结束时间！");
-        showLoading(false);
         return;
       }
-      // 🆕 按星期重复：勾选了总开关就要检查必填条件，避免提交了却因为条件不全被静静忽略
-      const recurModeOn = document.getElementById('recurModeCheckbox').checked;
-      const endDateVal = document.getElementById('endDate').value;
+      if (timeEndVal <= timeStartVal) {
+        alert(`⚠️ 结束时间（${timeEndVal}）必须晚于开始时间（${timeStartVal}）。\n如果活动跨过午夜，请拆成两笔提交。`);
+        return;
+      }
+      const useDateVal = document.getElementById('useDate').value;
+
+      // 编辑模式下「结束日期 / 按星期重复」是隐藏的，一律不看（以前隐藏的必填检查会卡住"保存修改"）
+      const recurModeOn = !id && document.getElementById('recurModeCheckbox').checked;
+      const endDateVal = id ? '' : document.getElementById('endDate').value;
       if (recurModeOn) {
         if (!endDateVal) {
           alert("⚠️ 使用「按星期重复」功能时，必须填写「结束日期」，用来限定重复的范围。");
-          showLoading(false);
           return;
         }
         if (recurSelectedWeekdays.size === 0) {
           alert("⚠️ 请至少勾选一个要重复的星期几（例如：周六）。");
-          showLoading(false);
           return;
         }
       }
+      if (endDateVal && endDateVal < useDateVal) {
+        alert("⚠️ 「结束日期」不能早于「场地使用日期」，请检查日期。");
+        return;
+      }
+      const recurList = recurModeOn ? Array.from(recurSelectedWeekdays) : null;
+      if (!id) {
+        const days = countSubmitDays(useDateVal, endDateVal, recurList);
+        if (days === 0) {
+          alert("⚠️ 所选日期范围内找不到任何符合条件的日期，请检查日期或星期几设置。");
+          return;
+        }
+        if (!confirmSubmitSize(days * checkedVenues.length, '借用记录')) return;
+      }
 
-      const id = document.getElementById('recordId').value;
       const record = {
         venues: checkedVenues,
         event: document.getElementById('event').value,
         unit: document.getElementById('unit').value,
-        timeStart: timeStartVal, // 🆕 存储结构升级：开始/结束时间分开传给后端，各存各的栏位
+        timeStart: timeStartVal, // 开始/结束时间分开传给后端，各存各的栏位
         timeEnd: timeEndVal,
         filler: document.getElementById('filler').value,
-        fillDate: document.getElementById('fillDate').value,
-        useDate: document.getElementById('useDate').value,
+        useDate: useDateVal,
         endDate: endDateVal
       };
-      if (recurModeOn) {
-        record.recurWeekdays = Array.from(recurSelectedWeekdays); // 🆕 只在这些星期几生成记录，例如 [6] = 只在每个周六
-      }
+      if (recurList) record.recurWeekdays = recurList; // 只在这些星期几生成记录，例如 [6] = 只在每个周六
+
+      if (!beginWrite(id ? "正在保存修改..." : "正在提交中...")) return;
       if (id) {
-        google.script.run.withSuccessHandler(function () {
+        const original = rawData.find(x => x.ID === id);
+        google.script.run
+          .withSuccessHandler(function () {
+            endWrite();
             resetForm();
+            showToast('✅ 已保存修改');
             loadData();
           })
           .withFailureHandler(function (err) {
-            alert(formatOpError(err));
-            showLoading(false);
+            endWrite();
+            const msg = formatOpError(err);
+            alert(msg);
+            if (msg.indexOf('找不到这笔记录') > -1) {
+              resetForm();
+              loadData();
+            }
           })
-          .updateRecord(id, record);
+          .updateRecord(id, record, recordMonthKey(original));
       } else {
-        google.script.run.withSuccessHandler(function () {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            endWrite();
             resetForm();
+            showToast(`✅ 已新增 ${res && res.count != null ? res.count : ''} 条借用记录`);
             loadData();
           })
           .withFailureHandler(function (err) {
+            endWrite();
             alert(formatOpError(err));
-            showLoading(false);
           })
           .createRecord(record);
       }
@@ -1315,30 +1595,37 @@
       document.getElementById('timeEnd').value = parsedTime.end;
       document.getElementById('filler').value = item.填写人 || '';
       document.getElementById('useDate').value = item.使用日期 || '';
-      document.getElementById('fillDate').value = item.填写日期 || '';
+      // 填写日期会更新成今天（保存修改时由服务器写入）
+      document.getElementById('fillDate').value = localTodayIso();
       document.getElementById('formTitle').innerText = "✏️ 修改借用记录";
       document.getElementById('submitBtn').className = "btn btn-warning";
       document.getElementById('submitBtn').innerText = "保存修改";
       document.getElementById('cancelBtn').style.display = "block";
       document.getElementById('endDateGroup').style.display = "none";
+      // 编辑单笔时用不到结束日期/按星期重复，先清掉，避免看不见的设定影响提交
+      document.getElementById('endDate').value = '';
+      document.getElementById('recurModeCheckbox').checked = false;
+      document.getElementById('recurWeekdayGroup').classList.add('d-none');
+      recurSelectedWeekdays.clear();
       document.getElementById('dateLabel').innerText = "场地使用日期";
       document.getElementById('venueLabel').innerText = "借用场地 (修改单笔模式)";
       renderTable(rawData);
     }
 
     function deleteRow(id) {
-      if (confirm('确定要删除这条场地借用记录吗？')) {
-        showLoading(true, "正在删除...");
-        google.script.run
-          .withSuccessHandler(function () {
-            loadData();
-          })
-          .withFailureHandler(function (err) {
-            alert(formatOpError(err));
-            showLoading(false);
-          })
-          .batchDeleteRecords([id]);
-      }
+      if (!confirm('确定要删除这条场地借用记录吗？')) return;
+      if (!beginWrite("正在删除...")) return;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          endWrite();
+          selectedRecordIds.delete(id);
+          afterRecordsDeleted([id], res);
+        })
+        .withFailureHandler(function (err) {
+          endWrite();
+          alert(formatOpError(err));
+        })
+        .batchDeleteRecords([id], monthHintsForIds([id]));
     }
 
     function resetForm() {
@@ -1346,12 +1633,11 @@
       document.getElementById('selectAllVenues').disabled = false;
       document.getElementById('bookingForm').reset();
       document.getElementById('recordId').value = '';
-      document.getElementById('fillDate').valueAsDate = new Date();
+      document.getElementById('fillDate').value = localTodayIso();
       globalSelectedVenues.clear();
-      activeBlockFilter = 'ALL';
       activeSearchQuery = '';
       document.getElementById('venueSearchInput').value = '';
-      renderVenueGridTiles();
+      handleBlockFilterChange('ALL'); // 连按钮高亮一起重置（以前只改变量，按钮还亮在原本的楼栋）
       document.getElementById('formTitle').innerText = "新建借用申请";
       document.getElementById('submitBtn').className = "btn btn-success";
       document.getElementById('submitBtn').innerText = "提交记录";

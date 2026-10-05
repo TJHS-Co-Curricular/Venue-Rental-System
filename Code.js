@@ -4,97 +4,104 @@
  * ====================================================================
  */
 
+// 🌐 公众页面（不需要登入白名单）：page 参数 → 模板文件名 + 网页标题
+const PUBLIC_PAGES = {
+  // 🔧 文件名同步：Apps Script 里的日历浏览页面文件名是 "Viewver"（历史拼写），两边要一致
+  view: { file: "Viewver", title: "场地借用日历 (浏览模式)" },
+  table: { file: "Table", title: "场地借用总表 (矩阵视图)" },
+  // 📺 电视看板：大讲堂/大礼堂/伯才堂 专用周视图，给挂在墙上的电视/显示器用
+  tv: { file: "TVBoard", title: "场地借用电视看板" },
+};
+
 function doGet(e) {
-  let page = e && e.parameter && e.parameter.page ? e.parameter.page : "admin";
+  const page = e && e.parameter && e.parameter.page ? String(e.parameter.page) : "admin";
 
-  // 🛡️ 核心安全卡点：如果访问的是管理端(admin)，执行严格的谷歌账户白名单物理拦截
-  if (page === "admin") {
-    const userEmail = Session.getActiveUser().getEmail(); // 自动抓取当前访问者的谷歌邮箱
-
-    // 调用白名单校验函数
-    if (!checkAdminWhitelist(userEmail)) {
-      // 校验失败，直接在服务器端拒绝渲染网页，输出安全警告
-      return HtmlService.createHtmlOutput(
-        "<div style='text-align:center; padding-top:60px; font-family:\"Segoe UI\",Arial,sans-serif; color:#333;'>" +
-          "<h2 style='color:#c00000; font-weight:bold;'>🔒 访问被拒绝 (Unauthorized Access)</h2>" +
-          "<p style='margin-top:20px; font-size:15px;'>您的谷歌账户：<b style='color:#0056b3;'>" +
-          (userEmail || "无法获取/未登录") +
-          "</b> 不在合法的管理员白名单中。</p>" +
-          "<p style='color:#666; font-size:13px; margin-top:30px;'>※ 若您拥有管理权限，请联系系统创建者在《场地编号》工作表的【管理员邮箱】列中追加您的账号。</p>" +
-          "</div>",
-      )
-        .setTitle("拒绝访问")
-        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-    }
-  }
-
-  // 校验通过或访问的是公众视图，放行路由
-  if (page === "view") {
-    // 🔧 文件名同步：Apps Script 里的日历浏览页面文件已改名为 "Viewver"，这里跟着改，
-    // 避免文件名对不上导致白屏（这也是你们自己开发日志里排查点1提过的最常见坑）
-    return HtmlService.createTemplateFromFile("Viewver")
+  const publicPage = PUBLIC_PAGES[page];
+  if (publicPage) {
+    return HtmlService.createTemplateFromFile(publicPage.file)
       .evaluate()
-      .setTitle("场地借用日历 (浏览模式)")
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-  } else if (page === "table") {
-    return HtmlService.createTemplateFromFile("Table")
-      .evaluate()
-      .setTitle("场地借用总表 (矩阵视图)")
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-  } else if (page === "tv") {
-    // 📺 电视看板：大讲堂/大礼堂/伯才堂 专用周视图（日期为列、时间为行），
-    // 给挂在墙上的电视/显示器用，不需要登入，无人操作也能一直自动刷新
-    return HtmlService.createTemplateFromFile("TVBoard")
-      .evaluate()
-      .setTitle("场地借用电视看板")
+      .setTitle(publicPage.title)
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 
-  // 完好渲染管理端
+  // 🛡️ 核心安全卡点：除了上面三个公众页面，其余任何 page 值（admin、空白、打错字的
+  // 随便什么）一律当成管理端处理，必须先过白名单。以前只有 page === "admin" 才检查，
+  // 结果 ?page=xxx 这种网址会跳过白名单直接显示管理端画面。
+  const userEmail = Session.getActiveUser().getEmail();
+  if (!checkAdminWhitelist_(userEmail)) {
+    return HtmlService.createHtmlOutput(
+      "<div style='text-align:center; padding-top:60px; font-family:\"Segoe UI\",Arial,sans-serif; color:#333;'>" +
+        "<h2 style='color:#c00000; font-weight:bold;'>🔒 访问被拒绝 (Unauthorized Access)</h2>" +
+        "<p style='margin-top:20px; font-size:15px;'>您的谷歌账户：<b style='color:#0056b3;'>" +
+        escapeHtmlServer_(userEmail || "无法获取/未登录") +
+        "</b> 不在合法的管理员白名单中。</p>" +
+        "<p style='color:#666; font-size:13px; margin-top:30px;'>※ 若您拥有管理权限，请联系系统创建者在《场地编号》工作表的【管理员邮箱】列中追加您的账号。</p>" +
+        "</div>",
+    )
+      .setTitle("拒绝访问")
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   return HtmlService.createTemplateFromFile("Admin")
     .evaluate()
     .setTitle("场地借用管理系统")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-/**
- * 🔑 智能白名单比对核心引擎
- */
-function checkAdminWhitelist(email) {
-  if (!email) return false;
-  email = email.toLowerCase().trim();
+function escapeHtmlServer_(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
-  // 🛡️ 安全特权兜底：当前脚本的拥有者（即您本人）永远拥有最高特权，防止误操作将自己锁死
-  const OWNER_EMAIL = Session.getEffectiveUser()
-    .getEmail()
-    .toLowerCase()
-    .trim();
-  if (email === OWNER_EMAIL) return true;
-
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = ss.getSheetByName("场地编号");
-    if (!sheet) return false;
-
-    const data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return false;
-
-    const headers = data[0];
-    // 动态寻找名为“管理员邮箱”的列索引
-    const emailIndex = headers.indexOf("管理员邮箱");
-    if (emailIndex === -1) return false;
-
-    // 循环内存数据检索匹配
-    for (let i = 1; i < data.length; i++) {
-      const whitelistEmail = String(data[i][emailIndex]).toLowerCase().trim();
-      if (whitelistEmail === email) {
-        return true; // 完美咬合匹配，放行通过
-      }
+// ====================================================================
+// 👥 管理员名单（《场地编号》表的【管理员邮箱】【管理员姓名】两列）
+// ====================================================================
+// 回传 Map<小写 email, 姓名>。【管理员姓名】这一列是可选的：没有这一列、或某一行
+// 没填姓名，该管理员还是在白名单里，只是自动带入「填写人」时只会显示 email。
+// ⚠️ 白名单刻意不做缓存（CacheService）——把某人从名单移除要立刻生效。
+function readAdminDirectory_() {
+  const directory = new Map();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("场地编号");
+  if (!sheet) return directory;
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return directory;
+  const headers = data[0].map((h) => String(h || "").replace(/\s+/g, ""));
+  const emailIndex = headers.indexOf("管理员邮箱");
+  const nameIndex = headers.indexOf("管理员姓名");
+  if (emailIndex === -1) return directory;
+  for (let i = 1; i < data.length; i++) {
+    const email = String(data[i][emailIndex] || "").toLowerCase().trim();
+    if (!email) continue;
+    const name = nameIndex > -1 ? String(data[i][nameIndex] || "").trim() : "";
+    if (!directory.has(email) || (!directory.get(email) && name)) {
+      directory.set(email, name);
     }
-  } catch (err) {
-    console.error("白名单数据流管道异常: " + err.message);
   }
-  return false; // 默认没有登记的账号一律封杀
+  return directory;
+}
+
+/**
+ * 🔑 白名单比对：脚本拥有者永远有权限（防止误操作把自己锁死），
+ * 其他人必须出现在《场地编号》表的【管理员邮箱】列。
+ */
+function checkAdminWhitelist_(email) {
+  if (!email) return false;
+  email = String(email).toLowerCase().trim();
+  try {
+    const ownerEmail = String(Session.getEffectiveUser().getEmail() || "")
+      .toLowerCase()
+      .trim();
+    if (ownerEmail && email === ownerEmail) return true;
+    return readAdminDirectory_().has(email);
+  } catch (err) {
+    console.error("白名单读取失败: " + err.message);
+    return false; // 默认没有登记的账号一律拒绝
+  }
 }
 
 function getWebAppUrl() {
@@ -107,14 +114,12 @@ function getWebAppUrl() {
 
 /**
  * 🛡️ 安全拦截：写入类操作（新增/修改/删除）必须调用这个函数做二次校验。
- * 之前的白名单只挡在 doGet 渲染管理端页面那一层，任何人只要打开公开的
- * 日历/总表网址、在浏览器控制台直接呼叫 google.script.run.createRecord(...)
- * 之类的写入函数，就能完全绕过白名单。这里把校验直接钉在写入函数本身，
- * 不管从哪个页面发起调用都逃不掉。
+ * 所有顶层函数都能被浏览器的 google.script.run 直接呼叫，页面层的白名单挡不住
+ * 有人在控制台直接呼叫 createRecord(...)，所以校验必须钉在写入函数本身。
  */
 function requireAdminAccess() {
   const email = Session.getActiveUser().getEmail();
-  if (!checkAdminWhitelist(email)) {
+  if (!checkAdminWhitelist_(email)) {
     throw new Error(
       "⛔ 权限不足：您的账号（" +
         (email || "未登录/无法获取") +
@@ -124,35 +129,143 @@ function requireAdminAccess() {
   return email;
 }
 
-// 🆕「填写人」留空时自动带出当前登入者的资料，格式："CHONG ZHI JIE 庄智杰 (zjchong@tsunjin.edu.my)"。
-// 显示名（People API 才拿得到，Session.getActiveUser() 本身只有 email、没有名字）来自 Google 账号
-// 自己的 People 资料，需要先在 Apps Script 编辑器左侧「服务 +」加上「Google People API」这个进阶服务
-// （一次性设置，见 README/CLAUDE.md）。没加这个服务、或者 API 呼叫失败（例如该账号没有设置过
-// 显示名），就自动退回只用 email，不会让整个提交失败。
-function getCurrentUserDisplayLabel(operatorEmail) {
-  const email = operatorEmail || Session.getActiveUser().getEmail() || "";
+// 🔐 只有脚本拥有者本人（在 Apps Script 编辑器里手动运行）才能执行的维护函数用这个检查。
+// 网页应用是"以部署者身份执行"，所以 getEffectiveUser() 永远是拥有者；只有拥有者
+// 本人操作时，getActiveUser() 才会跟它是同一个人。
+function isOwner_() {
   try {
-    if (
-      typeof People !== "undefined" &&
-      People.People &&
-      typeof People.People.get === "function"
-    ) {
-      const profile = People.People.get("people/me", { personFields: "names" });
-      const displayName =
-        profile && profile.names && profile.names.length > 0
-          ? profile.names[0].displayName
-          : "";
-      if (displayName) {
-        return email ? `${displayName} (${email})` : displayName;
-      }
-    }
-  } catch (e) {
-    Logger.log(
-      "getCurrentUserDisplayLabel: 取不到 Google 账号显示名（可能还没加 People API 服务），改用 email 顶替。" +
-        e.message,
-    );
+    const active = String(Session.getActiveUser().getEmail() || "").toLowerCase().trim();
+    const owner = String(Session.getEffectiveUser().getEmail() || "").toLowerCase().trim();
+    return !!active && active === owner;
+  } catch (err) {
+    return false;
   }
-  return email || "未知使用者";
+}
+
+function requireOwner_() {
+  if (!isOwner_()) {
+    throw new Error("⛔ 这个维护功能只能由系统拥有者在 Apps Script 编辑器里手动运行。");
+  }
+}
+
+// 🔒 写入锁：所有会改动表格的操作都包在这里面，同一时间只让一个人写。
+// 避免两位管理员同时借同一时段都通过冲突检查、或同时删除时行号错位删错行。
+const LOCK_WAIT_MS = 30000;
+function withScriptLock_(fn) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(LOCK_WAIT_MS);
+  } catch (e) {
+    throw new Error("⛔ 系统正忙（有其他管理员正在写入资料），请稍等几秒再试一次。");
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ⚡ 设定类资料（场地、单位颜色、假期、特殊状态类型）的缓存：这些资料每个公众页面、
+// 电视看板每次刷新都要读，但很少变动。直接编辑《场地编号》/《特殊状态》表的文字时，
+// onEdit(e) 会立刻清掉缓存；只改格子底色不会触发 onEdit，最多 CONFIG_CACHE_SECONDS 秒后生效。
+const CONFIG_CACHE_SECONDS = 300;
+const CONFIG_CACHE_KEYS = [
+  "cfg:venues",
+  "cfg:units",
+  "cfg:unitColors",
+  "cfg:holidays",
+  "cfg:specialTypes",
+];
+
+function getCachedConfig_(key, producer) {
+  let cache = null;
+  try {
+    cache = CacheService.getScriptCache();
+    const hit = cache.get(key);
+    if (hit) return JSON.parse(hit);
+  } catch (e) {
+    cache = null; // 缓存服务暂时不可用就直接读表，不影响功能
+  }
+  const value = producer();
+  // 空清单不缓存：可能只是暂时读取失败，下次再读一次就好（空的设定本来读起来也很快）
+  if (cache && !(Array.isArray(value) && value.length === 0)) {
+    try {
+      cache.put(key, JSON.stringify(value), CONFIG_CACHE_SECONDS);
+    } catch (e) {
+      // 超过单笔缓存大小上限之类的情况，忽略即可
+    }
+  }
+  return value;
+}
+
+function clearConfigCache_() {
+  try {
+    CacheService.getScriptCache().removeAll(CONFIG_CACHE_KEYS);
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * 🔧【维护工具】手动清除设定缓存：改了单位/特殊状态的格子底色想立刻看到效果时，
+ * 在 Apps Script 编辑器选这个函数运行一次即可（不清也会在 5 分钟内自动更新）。
+ */
+function clearConfigCache() {
+  requireOwner_();
+  clearConfigCache_();
+  return "✅ 已清除设定缓存，下次打开页面会读取最新的表格设定。";
+}
+
+// 📝 把多行资料一次写到工作表最后面，并且先把这些格子设成纯文本格式——
+// 防止 Google Sheets 把 "08:00"、"5/10/2026" 自动转成日期，或把 "=..."、"-..."、"+..."
+// 开头的文字当成公式解析。startCol 是 1-index 的起始栏位。
+function appendRowsAsText_(sheet, rows, startCol, startRow) {
+  if (!rows || rows.length === 0) return;
+  const col = startCol || 1;
+  const row = startRow || sheet.getLastRow() + 1;
+  ensureRowCapacity_(sheet, row + rows.length - 1);
+  sheet
+    .getRange(row, col, rows.length, rows[0].length)
+    .setNumberFormat("@")
+    .setValues(rows.map((r) => r.map((v) => (v === null || v === undefined ? "" : String(v)))));
+}
+
+// 工作表总行数不够时先补行（getRange 超出工作表范围会直接报错，不像 appendRow 会自动长大）
+function ensureRowCapacity_(sheet, neededLastRow) {
+  const maxRows = sheet.getMaxRows();
+  if (neededLastRow > maxRows) {
+    sheet.insertRowsAfter(maxRows, neededLastRow - maxRows);
+  }
+}
+
+// Google Sheets 不允许删掉"所有非冻结行"，删行前确保最后至少多一行空白行
+function ensureSpareRow_(sheet) {
+  if (sheet.getMaxRows() <= sheet.getLastRow()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), 1);
+  }
+}
+
+// 「填写人」留空时自动带入：《场地编号》表【管理员姓名】有填就显示"姓名 (email)"，
+// 没填就只显示 email。
+// ⚠️ 以前是用 People API 读 "people/me"，但网页应用是"以部署者身份执行"，"me" 永远是
+// 拥有者本人——结果其他管理员留空时，全部被填成拥有者的名字。改成查管理员名单后就没这个问题，
+// 也不再需要 People API 这个进阶服务。
+function getCurrentUserDisplayLabel_(operatorEmail) {
+  const email = String(operatorEmail || Session.getActiveUser().getEmail() || "").trim();
+  if (!email) return "未知使用者";
+  try {
+    const name = readAdminDirectory_().get(email.toLowerCase());
+    if (name) return `${name} (${email})`;
+  } catch (e) {
+    // 读不到名单就退回只用 email
+  }
+  return email;
+}
+
+// 今天（脚本时区）的 "yyyy-MM-dd"：填写日期一律由服务器决定，不信任浏览器传来的日期
+// （浏览器时区设定错误、或早上 8 点前 UTC 日期还是昨天，都会导致填写日期错一天）
+function todayIso_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
 }
 
 // 🆕 存储结构升级：原本「时间」是一个组合字符串栏位，现在拆成「时间(开始)」/「时间(结束)」两个独立栏位
@@ -195,50 +308,132 @@ const SPECIAL_STATUS_RECORD_HEADERS = [
   "系统时间戳",
 ];
 
-// 取得《特殊状态》工作表，第一次使用时自动建立（含表头样式、范例状态、时间栏位防呆格式）
-function getOrCreateSpecialStatusSheet() {
+// ====================================================================
+// 📅 提交前的共用校验 / 日期展开（一般借用记录、特殊状态共用）
+// ====================================================================
+// 单次提交最多会产生几笔记录。打错年份（例如结束日期打成明年）会一口气展开成几百笔，
+// 很容易超过 Apps Script 6 分钟的执行上限、写到一半中断，所以直接挡下来。
+const MAX_RECORDS_PER_SUBMIT = 200;
+
+function parseIsoDate_(str, label) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || "").trim());
+  if (!m) throw new Error(`⛔ ${label}格式不正确，请重新选择日期。`);
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (d.getMonth() !== Number(m[2]) - 1) throw new Error(`⛔ ${label}不是有效的日期。`);
+  return d;
+}
+
+// 借用时间必须是 "HH:mm"，而且结束要晚于开始。以前结束早于开始（例如 14:00–13:00）
+// 会被直接存进去、还会跳过冲突检测，之后同时段的借用也拦不住。
+function validateTimeRange_(timeStart, timeEnd) {
+  const s = timeStrToMinutes(timeStart);
+  const e = timeStrToMinutes(timeEnd);
+  if (s === null || e === null) {
+    throw new Error("⛔ 借用时间格式不正确，请重新选择开始与结束时间。");
+  }
+  if (e <= s) {
+    throw new Error(
+      `⛔ 结束时间（${timeEnd}）必须晚于开始时间（${timeStart}）。如果活动跨过午夜，请拆成两笔提交。`,
+    );
+  }
+  return { start: s, end: e };
+}
+
+// 把「开始日期 + 可选结束日期 + 可选按星期重复」展开成实际要写入的日期清单（"yyyy-MM-dd"）
+function expandDates_(useDate, endDateStr, recurWeekdays) {
+  const startDate = parseIsoDate_(useDate, "使用日期");
+  const endDate = endDateStr ? parseIsoDate_(endDateStr, "结束日期") : startDate;
+  if (endDate < startDate) {
+    throw new Error("⛔ 结束日期不能早于开始日期，请检查日期设置。");
+  }
+  const recurSet =
+    recurWeekdays && recurWeekdays.length > 0 ? new Set(recurWeekdays.map(Number)) : null;
+  const tz = Session.getScriptTimeZone();
+  const dates = [];
+  const current = new Date(startDate);
+  while (current <= endDate) {
+    if (!recurSet || recurSet.has(current.getDay())) {
+      dates.push(Utilities.formatDate(current, tz, "yyyy-MM-dd"));
+    }
+    current.setDate(current.getDate() + 1);
+    if (dates.length > 1000) break; // 防呆：不可能合理的超长范围，后面的上限检查会挡下
+  }
+  if (dates.length === 0) {
+    throw new Error(
+      recurSet
+        ? "⛔ 所选的日期区间内，找不到任何一天符合勾选的星期几，请检查日期范围或星期几设置。"
+        : "⛔ 没有产生任何要写入的日期，请检查日期设置。",
+    );
+  }
+  return dates;
+}
+
+function assertWithinSubmitLimit_(count) {
+  if (count > MAX_RECORDS_PER_SUBMIT) {
+    throw new Error(
+      `⛔ 这次提交会产生 ${count} 笔记录，超过单次上限 ${MAX_RECORDS_PER_SUBMIT} 笔。请检查日期范围是否打错，或分批提交。`,
+    );
+  }
+}
+
+function uniqueNonEmpty_(list) {
+  const seen = new Set();
+  const out = [];
+  (list || []).forEach((v) => {
+    const t = String(v == null ? "" : v).trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  });
+  return out;
+}
+
+// 取得《特殊状态》工作表，第一次使用时自动建立（含表头样式、范例状态、纯文本格式防呆）
+function getOrCreateSpecialStatusSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(SPECIAL_STATUS_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(SPECIAL_STATUS_SHEET_NAME);
     sheet.getRange(1, 1).setValue(SPECIAL_STATUS_TYPE_HEADER);
     sheet
-      .getRange(
-        1,
-        SPECIAL_STATUS_RECORD_START_COL,
-        1,
-        SPECIAL_STATUS_RECORD_HEADERS.length,
-      )
+      .getRange(1, SPECIAL_STATUS_RECORD_START_COL, 1, SPECIAL_STATUS_RECORD_HEADERS.length)
       .setValues([SPECIAL_STATUS_RECORD_HEADERS]);
     sheet.setFrozenRows(1);
     sheet
-      .getRange(
-        1,
-        1,
-        1,
-        SPECIAL_STATUS_RECORD_START_COL +
-          SPECIAL_STATUS_RECORD_HEADERS.length -
-          1,
-      )
+      .getRange(1, 1, 1, SPECIAL_STATUS_RECORD_START_COL + SPECIAL_STATUS_RECORD_HEADERS.length - 1)
       .setFontWeight("bold");
     sheet.setColumnWidth(1, 260);
-    // 🔧 防止"使用日期"/"填写日期"被 Google 表格自动识别转成 Date（跟其他表同样的坑点）
-    const useDateCol1 =
-      SPECIAL_STATUS_RECORD_START_COL +
-      SPECIAL_STATUS_RECORD_HEADERS.indexOf("使用日期");
-    const fillDateCol1 =
-      SPECIAL_STATUS_RECORD_START_COL +
-      SPECIAL_STATUS_RECORD_HEADERS.indexOf("填写日期");
+    // 🔧 标记记录区整块设成纯文本，防止日期被自动转成 Date
     sheet
-      .getRange(2, useDateCol1, sheet.getMaxRows() - 1, 1)
-      .setNumberFormat("@");
-    sheet
-      .getRange(2, fillDateCol1, sheet.getMaxRows() - 1, 1)
+      .getRange(2, SPECIAL_STATUS_RECORD_START_COL, sheet.getMaxRows() - 1, SPECIAL_STATUS_RECORD_HEADERS.length)
       .setNumberFormat("@");
     // 预先放几个常见范例，方便管理员上手（可以直接改文字/改颜色/删掉/新增更多行）
     sheet.getRange(2, 1, 3, 1).setValues([["维修"], ["考试场地"], ["不外借"]]);
   }
   return sheet;
+}
+
+// 读取"标记记录区"（C 列开始）的所有资料行。回传 { data, firstRow }，data 只包含
+// 实际有内容的范围。注意：A 列的状态类型定义可能比记录还多行，所以 getLastRow()
+// 不代表记录区的最后一行，判断记录用 ID 栏是否有值。
+function readSpecialStatusRecordBlock_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return { data: [], firstRow: 2 };
+  const data = sheet
+    .getRange(2, SPECIAL_STATUS_RECORD_START_COL, lastRow - 1, SPECIAL_STATUS_RECORD_HEADERS.length)
+    .getValues();
+  return { data: data, firstRow: 2 };
+}
+
+// 记录区（C 列 ID 栏）最后一个有值的行号；没有任何记录时回传 1（表头）
+function lastSpecialStatusRecordRow_(sheet) {
+  const block = readSpecialStatusRecordBlock_(sheet);
+  const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("ID");
+  for (let i = block.data.length - 1; i >= 0; i--) {
+    if (String(block.data[i][idIdx] || "").trim()) return block.firstRow + i;
+  }
+  return 1;
 }
 
 // 🎨 读取 A 列的"状态类型定义"，逻辑跟 getUnitColorMap() 完全对应：按表格原始顺序、
@@ -247,24 +442,24 @@ function getOrCreateSpecialStatusSheet() {
 // 因为 Admin.html 的打勾清单需要显示所有可选状态，颜色只是拿来做图例/矩阵染色用。
 function getSpecialStatusesFromSheet() {
   try {
-    const sheet = getOrCreateSpecialStatusSheet();
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) return [];
-    const values = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    const backgrounds = sheet.getRange(2, 1, lastRow - 1, 1).getBackgrounds();
-    const seen = new Set();
-    const list = [];
-    for (let i = 0; i < values.length; i++) {
-      const name = String(values[i][0] || "").trim();
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      const color = String(backgrounds[i][0] || "").toLowerCase();
-      list.push({
-        name: name,
-        color: !color || color === "#ffffff" ? "" : color,
-      });
-    }
-    return list;
+    return getCachedConfig_("cfg:specialTypes", () => {
+      const sheet = getOrCreateSpecialStatusSheet_();
+      const lastRow = sheet.getLastRow();
+      if (lastRow <= 1) return [];
+      const range = sheet.getRange(2, 1, lastRow - 1, 1);
+      const values = range.getValues();
+      const backgrounds = range.getBackgrounds();
+      const seen = new Set();
+      const list = [];
+      for (let i = 0; i < values.length; i++) {
+        const name = String(values[i][0] || "").trim();
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        const color = String(backgrounds[i][0] || "").toLowerCase();
+        list.push({ name: name, color: !color || color === "#ffffff" ? "" : color });
+      }
+      return list;
+    });
   } catch (err) {
     return [];
   }
@@ -276,119 +471,58 @@ function getSpecialStatusesFromSheet() {
 // 状态各一行。
 function createSpecialStatusEntries(payload) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    if (!payload || !payload.venues || payload.venues.length === 0)
-      throw new Error("⛔ 请至少勾选一个场地。");
-    if (!payload.statusNames || payload.statusNames.length === 0)
-      throw new Error("⛔ 请至少勾选一个特殊状态。");
-    if (!payload.useDate) throw new Error("⛔ 请选择日期。");
+  if (!payload) throw new Error("⛔ 没有收到要提交的资料。");
+  const venues = uniqueNonEmpty_(payload.venues);
+  const statusNames = uniqueNonEmpty_(payload.statusNames);
+  if (venues.length === 0) throw new Error("⛔ 请至少勾选一个场地。");
+  if (statusNames.length === 0) throw new Error("⛔ 请至少勾选一个特殊状态。");
+  if (!payload.useDate) throw new Error("⛔ 请选择日期。");
 
-    let startParts = payload.useDate.split("-");
-    let startDate = new Date(
-      Number(startParts[0]),
-      Number(startParts[1]) - 1,
-      Number(startParts[2]),
-    );
-    let endDate = startDate;
-    if (payload.endDate) {
-      let endParts = payload.endDate.split("-");
-      endDate = new Date(
-        Number(endParts[0]),
-        Number(endParts[1]) - 1,
-        Number(endParts[2]),
-      );
-    }
+  const dates = expandDates_(payload.useDate, payload.endDate, payload.recurWeekdays);
+  assertWithinSubmitLimit_(dates.length * venues.length * statusNames.length);
 
-    const recurSet =
-      payload.recurWeekdays && payload.recurWeekdays.length > 0
-        ? new Set(payload.recurWeekdays.map(Number))
-        : null;
+  // 场地编号 -> 场地名称 对照表，标记记录里直接存场地名称，方便之后不用每次都反查《场地编号》
+  const venueNameMap = {};
+  getVenuesFromSheet().forEach((v) => {
+    venueNameMap[v.code] = v.name;
+  });
 
-    if (recurSet) {
-      let checkDate = new Date(startDate);
-      let hasMatch = false;
-      while (checkDate <= endDate) {
-        if (recurSet.has(checkDate.getDay())) {
-          hasMatch = true;
-          break;
-        }
-        checkDate.setDate(checkDate.getDate() + 1);
-      }
-      if (!hasMatch) {
-        throw new Error(
-          "⛔ 所选的日期区间内，找不到任何一天符合勾选的星期几，请检查日期范围或星期几设置。",
-        );
-      }
-    }
-
-    // 场地编号 -> 场地名称 对照表，标记记录里直接存场地名称，方便之后不用每次都反查《场地编号》
-    const venueNameMap = {};
-    getVenuesFromSheet().forEach((v) => {
-      venueNameMap[v.code] = v.name;
-    });
-
-    const sheet = getOrCreateSpecialStatusSheet();
-    const timestamp = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    const todayStr = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd",
-    );
-    const formattedFillDate = formatDateStr(todayStr);
+  return withScriptLock_(() => {
+    const sheet = getOrCreateSpecialStatusSheet_();
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    const formattedFillDate = formatDateStr(todayIso_());
 
     const rowsToAppend = [];
-    let current = new Date(startDate);
-    while (current <= endDate) {
-      if (!recurSet || recurSet.has(current.getDay())) {
-        const dateString = Utilities.formatDate(
-          current,
-          Session.getScriptTimeZone(),
-          "yyyy-MM-dd",
-        );
-        const formattedUseDate = formatDateStr(dateString);
-        payload.venues.forEach((venueCode) => {
-          payload.statusNames.forEach((statusName) => {
-            const id = "SS_" + Utilities.getUuid();
-            rowsToAppend.push([
-              id,
-              venueCode,
-              venueNameMap[venueCode] || "",
-              statusName,
-              formattedUseDate,
-              operatorEmail,
-              formattedFillDate,
-              timestamp,
-            ]);
-          });
+    dates.forEach((dateString) => {
+      const formattedUseDate = formatDateStr(dateString);
+      venues.forEach((venueCode) => {
+        statusNames.forEach((statusName) => {
+          rowsToAppend.push([
+            "SS_" + Utilities.getUuid(),
+            venueCode,
+            venueNameMap[venueCode] || "",
+            statusName,
+            formattedUseDate,
+            operatorEmail,
+            formattedFillDate,
+            timestamp,
+          ]);
         });
-      }
-      current.setDate(current.getDate() + 1);
-    }
+      });
+    });
 
-    if (rowsToAppend.length === 0) {
-      throw new Error("⛔ 没有产生任何要写入的记录，请检查日期设置。");
-    }
+    // 接在"记录区"最后一笔后面写（不是整张表的最后一行——A 列的状态类型可能比记录还长）
+    appendRowsAsText_(
+      sheet,
+      rowsToAppend,
+      SPECIAL_STATUS_RECORD_START_COL,
+      lastSpecialStatusRecordRow_(sheet) + 1,
+    );
 
-    sheet
-      .getRange(
-        sheet.getLastRow() + 1,
-        SPECIAL_STATUS_RECORD_START_COL,
-        rowsToAppend.length,
-        SPECIAL_STATUS_RECORD_HEADERS.length,
-      )
-      .setValues(rowsToAppend);
-
-    const summary = `新增特殊状态：${payload.venues.join("、")} 设为「${payload.statusNames.join("、")}」，共 ${rowsToAppend.length} 笔`;
-    logSpecialStatusAudit("新增特殊状态", operatorEmail, summary);
-
+    const summary = `新增特殊状态：${venues.join("、")} 设为「${statusNames.join("、")}」，共 ${rowsToAppend.length} 笔`;
+    logSpecialStatusAudit_("新增特殊状态", operatorEmail, summary);
     return { success: true, count: rowsToAppend.length };
-  } catch (err) {
-    throw new Error(err.message);
-  }
+  });
 }
 
 // 读取某个日期区间内的特殊状态标记（Table.html/Viewver.html 用，逻辑对齐 readRecordsForRange：
@@ -396,20 +530,10 @@ function createSpecialStatusEntries(payload) {
 function readSpecialStatusForRange(startDateStr, endDateStr) {
   try {
     if (!startDateStr || !endDateStr) return [];
-    const sheet = getOrCreateSpecialStatusSheet();
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) return [];
-    const colorMap = new Map(
-      getSpecialStatusesFromSheet().map((s) => [s.name, s.color]),
-    );
-    const data = sheet
-      .getRange(
-        2,
-        SPECIAL_STATUS_RECORD_START_COL,
-        lastRow - 1,
-        SPECIAL_STATUS_RECORD_HEADERS.length,
-      )
-      .getValues();
+    const sheet = getOrCreateSpecialStatusSheet_();
+    const data = readSpecialStatusRecordBlock_(sheet).data;
+    if (data.length === 0) return [];
+    const colorMap = new Map(getSpecialStatusesFromSheet().map((s) => [s.name, s.color]));
     const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("ID");
     const venueIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("场地编号");
     const venueNameIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("场地名称");
@@ -418,6 +542,7 @@ function readSpecialStatusForRange(startDateStr, endDateStr) {
     const fillerIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("填写人");
     const results = [];
     for (let i = 0; i < data.length; i++) {
+      if (!String(data[i][idIdx] || "").trim()) continue;
       const dateVal = normalizeDateToISO(data[i][dateIdx]);
       if (!dateVal || dateVal < startDateStr || dateVal > endDateStr) continue;
       const statusName = String(data[i][statusIdx] || "").trim();
@@ -459,17 +584,8 @@ function readSpecialStatusForMonth(monthKey) {
 // 给 Admin.html 一个简单的清单可以查看/删除已经不需要的标记（例如维修完了要取消状态）
 function readSpecialStatusList() {
   try {
-    const sheet = getOrCreateSpecialStatusSheet();
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) return [];
-    const data = sheet
-      .getRange(
-        2,
-        SPECIAL_STATUS_RECORD_START_COL,
-        lastRow - 1,
-        SPECIAL_STATUS_RECORD_HEADERS.length,
-      )
-      .getValues();
+    const sheet = getOrCreateSpecialStatusSheet_();
+    const data = readSpecialStatusRecordBlock_(sheet).data;
     const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("ID");
     const venueIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("场地编号");
     const venueNameIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("场地名称");
@@ -478,7 +594,7 @@ function readSpecialStatusList() {
     const fillerIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("填写人");
     const list = [];
     for (let i = 0; i < data.length; i++) {
-      const id = data[i][idIdx];
+      const id = String(data[i][idIdx] || "").trim();
       if (!id) continue;
       list.push({
         id: id,
@@ -497,83 +613,39 @@ function readSpecialStatusList() {
 }
 
 // 管理端用：删除指定 ID 的特殊状态标记（例如维修完了、考试结束了，手动取消）。
-// 这份数据量通常不大，直接整表读出来找对应的 ID 就好，不用像 batchDeleteRecords() 那样
-// 跨多张月份工作表逐一扫描。
+// ⚠️ 只删"标记记录区"（C 列开始那一块）的格子、下方往上补，不能用 deleteRow() 删整行——
+// 整行删除会连同同一行 A 列的"状态类型定义"（例如"维修"跟它的颜色）一起删掉。
 function deleteSpecialStatusEntries(ids) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    if (!ids || ids.length === 0) return { success: true, count: 0 };
-    const sheet = getOrCreateSpecialStatusSheet();
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) return { success: true, count: 0 };
-    const idSet = new Set(ids);
-    const idColOffset = SPECIAL_STATUS_RECORD_HEADERS.indexOf("ID");
-    const data = sheet
-      .getRange(
-        2,
-        SPECIAL_STATUS_RECORD_START_COL,
-        lastRow - 1,
-        SPECIAL_STATUS_RECORD_HEADERS.length,
-      )
-      .getValues();
+  if (!ids || ids.length === 0) return { success: true, count: 0 };
+  return withScriptLock_(() => {
+    const sheet = getOrCreateSpecialStatusSheet_();
+    const block = readSpecialStatusRecordBlock_(sheet);
+    const idSet = new Set(ids.map(String));
+    const idIdx = SPECIAL_STATUS_RECORD_HEADERS.indexOf("ID");
     let deletedCount = 0;
-    for (let i = data.length - 1; i >= 0; i--) {
-      if (idSet.has(data[i][idColOffset])) {
-        sheet.deleteRow(i + 2); // data 是 0-index、且从工作表第 2 行开始，行号要 +2
+    for (let i = block.data.length - 1; i >= 0; i--) {
+      if (idSet.has(String(block.data[i][idIdx]))) {
+        sheet
+          .getRange(block.firstRow + i, SPECIAL_STATUS_RECORD_START_COL, 1, SPECIAL_STATUS_RECORD_HEADERS.length)
+          .deleteCells(SpreadsheetApp.Dimension.ROWS);
         deletedCount++;
       }
     }
     if (deletedCount > 0) {
-      logSpecialStatusAudit(
-        "删除特殊状态",
-        operatorEmail,
-        `删除了 ${deletedCount} 笔特殊状态标记`,
-      );
+      logSpecialStatusAudit_("删除特殊状态", operatorEmail, `删除了 ${deletedCount} 笔特殊状态标记`);
     }
     return { success: true, count: deletedCount };
-  } catch (err) {
-    throw new Error(err.message);
-  }
+  });
 }
 
-// 特殊状态专用的简化版操作日志（跟 logAudit() 共用同一张《操作日志》表，但栏位形状对不上
+// 特殊状态 / 公告栏用的简化版操作日志（跟 logAudit_() 共用同一张《操作日志》表，但栏位形状对不上
 // 一般借用记录的 HEADERS，所以摘要文字直接放进"活动"那一栏，其余栏位留空）
-function logSpecialStatusAudit(actionType, operatorEmail, summaryText) {
+function logSpecialStatusAudit_(actionType, operatorEmail, summaryText) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
-    if (!sheet) {
-      sheet = ss.insertSheet(AUDIT_SHEET_NAME);
-      sheet.appendRow([
-        "时间",
-        "操作类型",
-        "操作人邮箱",
-        "记录ID",
-        "场地",
-        "活动",
-        "单位",
-        "时间段",
-      ]);
-      sheet.setFrozenRows(1);
-      sheet.getRange("A1:H1").setFontWeight("bold");
-    }
-    const now = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    sheet.appendRow([
-      now,
-      actionType,
-      operatorEmail || "未知",
-      "",
-      "",
-      summaryText,
-      "",
-      "",
-    ]);
+    appendAuditRows_([[nowStamp_(), actionType, operatorEmail || "未知", "", "", summaryText, "", ""]]);
   } catch (e) {
-    console.error("写入特殊状态操作日志失败: " + e.message);
+    console.error("写入操作日志失败: " + e.message);
   }
 }
 
@@ -650,6 +722,10 @@ function isClubUnitCode(unitName) {
 // - 没有特别上色（默认白色/透明）的单位不会出现在这份清单里
 // - 🆕"学会团体"（字母开头编号，如 A-摄影学会）一律跳过，矩阵总表只显示"学校行政团体"（数字编号）的颜色
 function getUnitColorMap() {
+  return getCachedConfig_("cfg:unitColors", readUnitColorMap_);
+}
+
+function readUnitColorMap_() {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName("场地编号");
@@ -683,10 +759,95 @@ function getUnitColorMap() {
   }
 }
 
-function getVenuesFromSheet() {
+// 🏖️ 读取《场地编号》工作表里的"假期设定"三列：【假期设定(月)】【开始(日期)】【结束(日期)】，
+// 整理成 [{ month, start, end }, ...]（都是数字，month 1~12、start/end 1~31），给矩阵总表 /
+// 日历视图 / 电视看板把假期日期的格子填成黄色底。
+// - 每年通用、不分年份：例如 01 | 05 | 14 代表"每年 1 月 5 日～14 日"是假期，跨年后
+//   管理员只要照新学年的校历改这几格就好
+// - 跨月的假期（例如 8/28～9/5）请拆成两行：08 | 28 | 31、09 | 01 | 05
+// - 同一个月有两段假期，可以再多加一行同月份的设定，两段都会生效
+// - 只填了开始或只填了结束，就当作只有那一天放假；开始 > 结束会自动对调
+// - 月份那格有填、但开始/结束都空着（例如 03、04 那几行），代表那个月没有假期，直接跳过
+// - 表头比对时会忽略空格、全形/半形括号的差异，所以写成「假期设定（月）」也认得出来
+function getHolidaySettings() {
+  return getCachedConfig_("cfg:holidays", readHolidaySettings_);
+}
+
+function readHolidaySettings_() {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName("场地编号");
+    const sheet = ss.getSheetByName("场地编号");
+    if (!sheet) return [];
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    if (lastRow <= 1 || lastColumn < 1) return [];
+
+    const normalizeHeader = (h) =>
+      String(h || "")
+        .replace(/\s+/g, "")
+        .replace(/（/g, "(")
+        .replace(/）/g, ")");
+    const headers = sheet
+      .getRange(1, 1, 1, lastColumn)
+      .getValues()[0]
+      .map(normalizeHeader);
+
+    const monthIdx = headers.findIndex((h) => h.indexOf("假期设定") === 0);
+    if (monthIdx === -1) return [];
+    // 先找完全吻合的表头，找不到再退回"假期设定"右边第一个以 开始 / 结束 开头的列
+    const findAfter = (exact, prefix) => {
+      const exactIdx = headers.indexOf(exact);
+      if (exactIdx !== -1) return exactIdx;
+      for (let i = monthIdx + 1; i < headers.length; i++) {
+        if (headers[i].indexOf(prefix) === 0) return i;
+      }
+      return -1;
+    };
+    const startIdx = findAfter("开始(日期)", "开始");
+    const endIdx = findAfter("结束(日期)", "结束");
+    if (startIdx === -1 && endIdx === -1) return [];
+
+    const data = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+    const toInt = (v) => {
+      const s = String(v === null || v === undefined ? "" : v).trim();
+      if (!s) return NaN;
+      const n = Number(s);
+      return Number.isInteger(n) ? n : NaN;
+    };
+
+    const holidays = [];
+    data.forEach((row) => {
+      const month = toInt(row[monthIdx]);
+      if (!(month >= 1 && month <= 12)) return;
+      let start = startIdx === -1 ? NaN : toInt(row[startIdx]);
+      let end = endIdx === -1 ? NaN : toInt(row[endIdx]);
+      const startOk = start >= 1 && start <= 31;
+      const endOk = end >= 1 && end <= 31;
+      if (!startOk && !endOk) return; // 这个月没设假期
+      if (!startOk) start = end;
+      if (!endOk) end = start;
+      if (start > end) {
+        const tmp = start;
+        start = end;
+        end = tmp;
+      }
+      holidays.push({ month: month, start: start, end: end });
+    });
+    return holidays;
+  } catch (err) {
+    return [];
+  }
+}
+
+function getVenuesFromSheet() {
+  return getCachedConfig_("cfg:venues", readVenuesFromSheet_);
+}
+
+function readVenuesFromSheet_() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("场地编号");
+    if (!sheet) throw new Error("找不到《场地编号》工作表（是否被改名或删除了？）");
     const data = sheet.getDataRange().getValues();
     let venueList = [];
     for (let i = 1; i < data.length; i++) {
@@ -703,6 +864,10 @@ function getVenuesFromSheet() {
 }
 
 function getUnitsFromSheet() {
+  return getCachedConfig_("cfg:units", readUnitsFromSheet_);
+}
+
+function readUnitsFromSheet_() {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName("场地编号");
@@ -757,33 +922,54 @@ function rowToRecordObj(headers, rowValues) {
   return obj;
 }
 
-function readRecords() {
-  let allRecords = [];
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheets = ss.getSheets();
-    sheets.forEach((sheet) => {
-      if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
-      const sheetName = sheet.getName();
-      if (
-        sheetName === "场地编号" ||
-        sheetName === TRASH_SHEET_NAME ||
-        sheetName === AUDIT_SHEET_NAME
-      )
-        return;
-      const data = sheet.getDataRange().getValues();
-      if (data.length > 1) {
-        const headers = data[0];
-        if (headers && headers[0] === "ID") {
-          for (let i = 1; i < data.length; i++) {
-            allRecords.push(rowToRecordObj(headers, data[i]));
-          }
-        }
-      }
-    });
-  } catch (err) {
-    throw new Error(err.message);
+// 判断一张工作表是不是"借用记录月份表"（表头第一格是 ID）。特殊状态、公告栏、
+// 场地编号、回收站、操作日志都不是。
+function isRecordSheetName_(sheetName) {
+  return !(
+    sheetName === "场地编号" ||
+    sheetName === TRASH_SHEET_NAME ||
+    sheetName === AUDIT_SHEET_NAME ||
+    sheetName === SPECIAL_STATUS_SHEET_NAME ||
+    sheetName === ANNOUNCEMENT_SHEET_NAME
+  );
+}
+
+// 管理端"资料范围"选项 → 最早要读的月份（"yyyy-MM"）。null 代表全部。
+const ADMIN_RANGE_MONTHS_BACK = { recent: 3, year: 12, all: null };
+
+// ⚡ 管理端借用记录列表：以前每次打开都把系统里所有月份的记录全部读出来，年份越多越慢。
+// 现在预设只读"3 个月前的那个月"到未来所有月份（rangeKey = "recent"），想查更早的记录
+// 可以在管理端切换成"最近 12 个月"或"全部"。
+function readRecordsForAdmin(rangeKey) {
+  requireAdminAccess();
+  const monthsBack = Object.prototype.hasOwnProperty.call(ADMIN_RANGE_MONTHS_BACK, rangeKey)
+    ? ADMIN_RANGE_MONTHS_BACK[rangeKey]
+    : ADMIN_RANGE_MONTHS_BACK.recent;
+  let minMonthKey = null;
+  if (monthsBack !== null) {
+    const now = new Date();
+    const cutoff = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+    minMonthKey = Utilities.formatDate(cutoff, Session.getScriptTimeZone(), "yyyy-MM");
   }
+  const allRecords = [];
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.getSheets().forEach((sheet) => {
+    if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+    const sheetName = sheet.getName();
+    if (!isRecordSheetName_(sheetName)) return;
+    if (minMonthKey) {
+      // 只读名字是 yyyy-MM 且不早于界线的月份表
+      if (!/^\d{4}-\d{2}$/.test(sheetName) || sheetName < minMonthKey) return;
+    }
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+    const headers = data[0];
+    if (!headers || headers[0] !== "ID") return;
+    for (let i = 1; i < data.length; i++) {
+      if (!String(data[i][0] || "").trim()) continue;
+      allRecords.push(rowToRecordObj(headers, data[i]));
+    }
+  });
   return allRecords;
 }
 
@@ -801,6 +987,7 @@ function readRecordsForMonth(monthKey) {
     if (!headers || headers[0] !== "ID") return [];
     const records = [];
     for (let i = 1; i < data.length; i++) {
+      if (!String(data[i][0] || "").trim()) continue;
       records.push(rowToRecordObj(headers, data[i]));
     }
     return records;
@@ -841,6 +1028,7 @@ function readRecordsForRange(startDateStr, endDateStr) {
           const headers = data[0];
           if (headers && headers[0] === "ID") {
             for (let i = 1; i < data.length; i++) {
+              if (!String(data[i][0] || "").trim()) continue;
               const rec = rowToRecordObj(headers, data[i]);
               // 月份工作表整月都在，但只保留真正落在所请求区间内的那些行
               if (
@@ -942,6 +1130,8 @@ function getTvBoardWeekData() {
       // 是完全同一套数据来源（getUnitColorMap() / getSpecialStatusesFromSheet()），
       // 一起塞进这个函数的回传值，电视看板不用为了图例再多打一次 RPC
       specialStatusTypes: getSpecialStatusesFromSheet(),
+      // 🏖️ 假期设定（每年通用的 [{month, start, end}]），前端把落在假期的那几天整列填黄色
+      holidays: getHolidaySettings(),
     };
   } catch (err) {
     throw new Error(err.message);
@@ -962,7 +1152,11 @@ function formatDateStr(dateStr) {
  * 不代表真实操作者）。现在删除前会先把整行归档到回收站工作表，并且
  * 新增/修改/删除都会写一笔操作日志（含真实谷歌账号），方便事后追责或找回误删数据。
  */
-function getTrashSheet() {
+function nowStamp_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+}
+
+function getTrashSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(TRASH_SHEET_NAME);
   if (!sheet) {
@@ -970,90 +1164,68 @@ function getTrashSheet() {
     sheet.appendRow(["删除时间", "操作人邮箱"].concat(HEADERS));
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, 2 + HEADERS.length).setFontWeight("bold");
-    // 🔧 防止时间栏位被表格自动识别成 Date：前面有"删除时间""操作人邮箱"两栏偏移，
-    // 时间(开始)/时间(结束) 在 HEADERS 里是第 5、6 栏，这里要 +2
-    const startCol = HEADERS.indexOf("时间(开始)") + 1 + 2;
-    const endCol = HEADERS.indexOf("时间(结束)") + 1 + 2;
-    if (startCol > 2 && endCol > 2) {
-      sheet.getRange(1, startCol, sheet.getMaxRows(), 2).setNumberFormat("@");
-    }
+    // 🔧 整张资料区设成纯文本，防止时间/日期被表格自动识别成 Date
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, 2 + HEADERS.length).setNumberFormat("@");
   }
   return sheet;
 }
 
-function archiveToTrash(trashSheet, headers, rowValues, operatorEmail) {
-  try {
-    const deleteTime = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    // 如果这行来自尚未跑迁移的旧结构工作表（只有单一"时间"栏），先把组合文本拆成开始/结束，
-    // 这样归档进回收站的记录也能对齐新结构，不会漏掉时间信息
-    const hasSplitTime =
-      headers.indexOf("时间(开始)") > -1 && headers.indexOf("时间(结束)") > -1;
-    const legacyTimeIdx = headers.indexOf("时间");
-    const legacySplit =
-      !hasSplitTime && legacyTimeIdx > -1
-        ? legacyTimeStringToStartEnd(rowValues[legacyTimeIdx])
-        : null;
+const AUDIT_HEADERS = ["时间", "操作类型", "操作人邮箱", "记录ID", "场地", "活动", "单位", "时间段"];
 
-    // 按 HEADERS 固定顺序对齐，缺的栏位补空字符串，保证回收站格式统一
-    const alignedRow = HEADERS.map((h) => {
-      if (legacySplit && h === "时间(开始)") return legacySplit.start;
-      if (legacySplit && h === "时间(结束)") return legacySplit.end;
-      const idx = headers.indexOf(h);
-      return idx === -1 ? "" : rowValues[idx];
-    });
-    trashSheet.appendRow(
-      [deleteTime, operatorEmail || "未知"].concat(alignedRow),
-    );
-  } catch (e) {
-    console.error("归档到回收站失败: " + e.message);
+function getAuditSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(AUDIT_SHEET_NAME);
+    sheet.appendRow(AUDIT_HEADERS);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, AUDIT_HEADERS.length).setFontWeight("bold");
   }
+  return sheet;
 }
 
-function logAudit(actionType, operatorEmail, rowValues, headers) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
-    if (!sheet) {
-      sheet = ss.insertSheet(AUDIT_SHEET_NAME);
-      sheet.appendRow([
-        "时间",
-        "操作类型",
-        "操作人邮箱",
-        "记录ID",
-        "场地",
-        "活动",
-        "单位",
-        "时间段",
-      ]);
-      sheet.setFrozenRows(1);
-      sheet.getRange("A1:H1").setFontWeight("bold");
-    }
-    const idIdx = headers.indexOf("ID");
-    const venueIdx = headers.indexOf("场地");
-    const eventIdx = headers.indexOf("活动");
-    const unitIdx = headers.indexOf("单位");
-    const now = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    sheet.appendRow([
-      now,
-      actionType,
-      operatorEmail || "未知",
-      idIdx > -1 ? rowValues[idIdx] : "",
-      venueIdx > -1 ? rowValues[venueIdx] : "",
-      eventIdx > -1 ? rowValues[eventIdx] : "",
-      unitIdx > -1 ? rowValues[unitIdx] : "",
-      formatRowTimeDisplay(headers, rowValues),
-    ]);
-  } catch (e) {
-    console.error("写入操作日志失败: " + e.message);
-  }
+function appendAuditRows_(rows) {
+  if (!rows || rows.length === 0) return;
+  appendRowsAsText_(getAuditSheet_(), rows);
+}
+
+// 把一行借用记录按 HEADERS 固定顺序对齐成回收站的一行：[删除时间, 操作人邮箱, ...HEADERS]
+function buildTrashRow_(headers, rowValues, operatorEmail) {
+  // 如果这行来自尚未跑迁移的旧结构工作表（只有单一"时间"栏），先把组合文本拆成开始/结束，
+  // 这样归档进回收站的记录也能对齐新结构，不会漏掉时间信息
+  const hasSplitTime = headers.indexOf("时间(开始)") > -1 && headers.indexOf("时间(结束)") > -1;
+  const legacyTimeIdx = headers.indexOf("时间");
+  const legacySplit =
+    !hasSplitTime && legacyTimeIdx > -1 ? legacyTimeStringToStartEnd(rowValues[legacyTimeIdx]) : null;
+  const obj = rowToRecordObj(headers, rowValues);
+  const alignedRow = HEADERS.map((h) => {
+    if (legacySplit && h === "时间(开始)") return legacySplit.start;
+    if (legacySplit && h === "时间(结束)") return legacySplit.end;
+    const idx = headers.indexOf(h);
+    if (idx === -1) return "";
+    // 日期栏位统一存成 d/M/yyyy 文字（原值可能已被表格转成 Date）
+    if (h === "使用日期" || h === "填写日期") return formatDateStr(obj[h]);
+    if (h === "时间(开始)" || h === "时间(结束)") return obj[h];
+    return rowValues[idx];
+  });
+  return [nowStamp_(), operatorEmail || "未知"].concat(alignedRow);
+}
+
+function buildAuditRow_(actionType, operatorEmail, rowValues, headers) {
+  const idIdx = headers.indexOf("ID");
+  const venueIdx = headers.indexOf("场地");
+  const eventIdx = headers.indexOf("活动");
+  const unitIdx = headers.indexOf("单位");
+  return [
+    nowStamp_(),
+    actionType,
+    operatorEmail || "未知",
+    idIdx > -1 ? rowValues[idIdx] : "",
+    venueIdx > -1 ? rowValues[venueIdx] : "",
+    eventIdx > -1 ? rowValues[eventIdx] : "",
+    unitIdx > -1 ? rowValues[unitIdx] : "",
+    formatRowTimeDisplay(headers, rowValues),
+  ];
 }
 
 /**
@@ -1146,285 +1318,303 @@ function formatRowTimeDisplay(headers, row) {
   return timeIdx > -1 ? row[timeIdx] : "";
 }
 
-// 检查【某场地】在【某天】的【某时间段】（开始/结束的 "HH:MM" 字符串）是否与既有记录重叠
-// excludeId：编辑记录时排除自己原本那一笔，避免跟自己"冲突"
-function findVenueTimeConflict(
-  venueCode,
-  dateString,
-  timeStartStr,
-  timeEndStr,
-  excludeId,
-) {
-  const newStart = timeStrToMinutes(timeStartStr);
-  const newEnd = timeStrToMinutes(timeEndStr);
-  if (newStart === null || newEnd === null || newEnd <= newStart) return null; // 新记录时间格式无法解析时不拦截
-
-  const sheet = getSheetForDate(dateString);
+// 读一张月份工作表，建成「场地|日期」→ 既有借用时段 的索引（每个月份只读一次，
+// 不再像以前那样每个"日期 × 场地"组合都重新读一次整张表）。
+// 工作表不存在时回传空索引——扫描冲突的过程中不会顺手建出空白的月份工作表。
+function buildMonthConflictIndex_(monthKey) {
+  const index = new Map();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(monthKey);
+  if (!sheet) return index;
   const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return null;
+  if (lastRow <= 1) return index;
   const data = sheet.getRange(1, 1, lastRow, sheet.getLastColumn()).getValues();
   const headers = data[0];
   const idIdx = headers.indexOf("ID");
   const venueIdx = headers.indexOf("场地");
   const eventIdx = headers.indexOf("活动");
   const useDateIdx = headers.indexOf("使用日期");
-  if (idIdx === -1 || venueIdx === -1 || useDateIdx === -1) return null;
-
+  if (idIdx === -1 || venueIdx === -1 || useDateIdx === -1) return index;
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (excludeId && String(row[idIdx]) === String(excludeId)) continue;
-    if (String(row[venueIdx]).trim() !== String(venueCode).trim()) continue;
-    if (normalizeDateToISO(row[useDateIdx]) !== dateString) continue;
+    if (!String(row[idIdx] || "").trim()) continue;
+    const range = getRowTimeRangeMinutes(headers, row);
+    if (!range) continue; // 既有数据时间格式无法解析时不拦截（多半是历史遗留数据）
+    const key = String(row[venueIdx]).trim() + "|" + normalizeDateToISO(row[useDateIdx]);
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push({
+      id: String(row[idIdx]),
+      event: row[eventIdx],
+      start: range.start,
+      end: range.end,
+      display: formatRowTimeDisplay(headers, row),
+    });
+  }
+  return index;
+}
 
-    const existingRange = getRowTimeRangeMinutes(headers, row);
-    if (!existingRange) continue; // 既有数据时间格式无法解析时不拦截（多半是历史遗留数据）
-
-    // 区间重叠判定：newStart < existingEnd 且 existingStart < newEnd
-    if (newStart < existingRange.end && existingRange.start < newEnd) {
-      return {
-        conflictId: row[idIdx],
-        conflictEvent: row[eventIdx],
-        conflictTime: formatRowTimeDisplay(headers, row),
-      };
-    }
+// 区间重叠判定：newStart < existingEnd 且 existingStart < newEnd；excludeId 用于编辑时排除自己
+function findConflictInIndex_(index, venueCode, dateString, range, excludeId) {
+  const list = index.get(String(venueCode).trim() + "|" + dateString) || [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    if (excludeId && r.id === String(excludeId)) continue;
+    if (range.start < r.end && r.start < range.end) return r;
   }
   return null;
 }
 
+function conflictMessage_(venueCode, dateString, conflict, isEdit) {
+  return (
+    `⛔ 场地时段冲突：【${venueCode}】在 ${formatDateStr(dateString)} 已有借用记录「${conflict.event}」` +
+    `（${conflict.display}），与本次${isEdit ? "修改后" : "提交"}的时间重叠，请修改时间或更换场地后再${isEdit ? "保存" : "提交"}。`
+  );
+}
+
+// 按某张工作表自己的表头顺序，把一笔记录（以 HEADERS 栏名为键的物件）排成一行。
+// 一般就是 HEADERS 的顺序；万一遇到还没迁移的旧结构表（单一"时间"栏），也能写对位置。
+function recordToSheetRow_(sheetHeaders, rec) {
+  return sheetHeaders.map((h) => {
+    if (h === "时间") return `${rec["时间(开始)"] || ""}-${rec["时间(结束)"] || ""}`;
+    return Object.prototype.hasOwnProperty.call(rec, h) ? rec[h] : "";
+  });
+}
+
+function getSheetHeaders_(sheet) {
+  return sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
+}
+
+function normalizeRecordInput_(record) {
+  if (!record) throw new Error("⛔ 没有收到要提交的资料。");
+  const event = String(record.event || "").trim();
+  const unit = String(record.unit || "").trim();
+  if (!event) throw new Error("⛔ 请填写活动名称。");
+  if (!unit) throw new Error("⛔ 请选择借用单位。");
+  return {
+    event: event,
+    unit: unit,
+    timeStart: String(record.timeStart || "").trim(),
+    timeEnd: String(record.timeEnd || "").trim(),
+    filler: String(record.filler || "").trim(),
+  };
+}
+
 function createRecord(record) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    // 🆕「填写人」留空就自动带出当前登入者的姓名+email，不强迫一定要手动填
-    if (!record.filler || String(record.filler).trim() === "") {
-      record.filler = getCurrentUserDisplayLabel(operatorEmail);
-    }
-    let startParts = record.useDate.split("-");
-    let startDate = new Date(
-      Number(startParts[0]),
-      Number(startParts[1]) - 1,
-      Number(startParts[2]),
-    );
-    let endDate = startDate;
-    if (record.endDate) {
-      let endParts = record.endDate.split("-");
-      endDate = new Date(
-        Number(endParts[0]),
-        Number(endParts[1]) - 1,
-        Number(endParts[2]),
-      );
-    }
-    const timestamp = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    const formattedFillDate = formatDateStr(record.fillDate);
+  const input = normalizeRecordInput_(record);
+  const venues = uniqueNonEmpty_(record.venues);
+  if (venues.length === 0) throw new Error("⛔ 请至少勾选一个场地。");
+  const range = validateTimeRange_(input.timeStart, input.timeEnd);
+  // 🆕 按星期重复：record.recurWeekdays 是 0~6 的星期几数组（0=周日...6=周六），没传 = 连续每天
+  const dates = expandDates_(record.useDate, record.endDate, record.recurWeekdays);
+  assertWithinSubmitLimit_(dates.length * venues.length);
 
-    // 🆕 按星期重复：例如"02月01日至03月01日的每个星期六"。record.recurWeekdays 是
-    // 0~6 的星期几数组（0=周日...6=周六，对齐 JS Date.getDay()），只有传了这个字段
-    // 才启用过滤，不影响原本"连续每天"的用法（未传或空数组 = 不过滤，维持原行为）
-    const recurSet =
-      record.recurWeekdays && record.recurWeekdays.length > 0
-        ? new Set(record.recurWeekdays.map(Number))
-        : null;
+  // 「填写人」留空就自动带出当前登入者的姓名+email
+  const filler = input.filler || getCurrentUserDisplayLabel_(operatorEmail);
 
-    if (recurSet) {
-      // 先检查日期范围内到底有没有任何一天符合选中的星期几，避免用户选错日期区间/
-      // 星期几组合导致什么都没写入却毫无提示
-      let checkDate = new Date(startDate);
-      let hasMatch = false;
-      while (checkDate <= endDate) {
-        if (recurSet.has(checkDate.getDay())) {
-          hasMatch = true;
-          break;
-        }
-        checkDate.setDate(checkDate.getDate() + 1);
-      }
-      if (!hasMatch) {
-        throw new Error(
-          "⛔ 所选的日期区间内，找不到任何一天符合勾选的星期几，请检查日期范围或星期几设置。",
-        );
-      }
-    }
-
-    // 🚧 第一步：先对整批「日期 × 场地」组合逐一扫描冲突，全部通过才真正写入，
-    // 避免连续借用横跨多天时写到一半才撞档，留下半套脏数据
-    let scanDate = new Date(startDate);
-    while (scanDate <= endDate) {
-      if (!recurSet || recurSet.has(scanDate.getDay())) {
-        const scanDateString = Utilities.formatDate(
-          scanDate,
-          Session.getScriptTimeZone(),
-          "yyyy-MM-dd",
-        );
-        for (let vi = 0; vi < record.venues.length; vi++) {
-          const conflict = findVenueTimeConflict(
-            record.venues[vi],
-            scanDateString,
-            record.timeStart,
-            record.timeEnd,
-            null,
-          );
-          if (conflict) {
-            throw new Error(
-              `⛔ 场地时段冲突：【${record.venues[vi]}】在 ${formatDateStr(scanDateString)} 已有借用记录「${conflict.conflictEvent}」（${conflict.conflictTime}），与本次提交的时间重叠，请修改时间或更换场地后再提交。`,
-            );
-          }
-        }
-      }
-      scanDate.setDate(scanDate.getDate() + 1);
-    }
-
-    // ✅ 第二步：确认无冲突后才正式写入（按星期重复时，只写入符合勾选星期几的那些日期）
-    let current = new Date(startDate);
-    while (current <= endDate) {
-      if (!recurSet || recurSet.has(current.getDay())) {
-        let dateString = Utilities.formatDate(
-          current,
-          Session.getScriptTimeZone(),
-          "yyyy-MM-dd",
-        );
-        const sheet = getSheetForDate(dateString);
-        const formattedUseDate = formatDateStr(dateString);
-        record.venues.forEach((venueCode) => {
-          // 🛡️ 改用完整 UUID（原本只取前 8 位），大幅降低长期高频使用下的撞号概率
-          const id = "ID_" + Utilities.getUuid();
-          const rowValues = [
-            id,
-            venueCode,
-            record.event,
-            record.unit,
-            record.timeStart,
-            record.timeEnd,
-            record.filler,
-            formattedFillDate,
-            formattedUseDate,
-            timestamp,
-          ];
-          sheet.appendRow(rowValues);
-          logAudit("新增", operatorEmail, rowValues, HEADERS);
-        });
-      }
-      current.setDate(current.getDate() + 1);
-    }
-    return { success: true };
-  } catch (err) {
-    throw new Error(err.message);
-  }
-}
-
-function batchDeleteRecords(ids) {
-  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    if (!ids || ids.length === 0) return { success: true, count: 0 };
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheets = ss.getSheets();
-    let deletedCount = 0;
-    const idSet = new Set(ids);
-    const trashSheet = getTrashSheet();
-    sheets.forEach((sheet) => {
-      if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
-      const sheetName = sheet.getName();
-      if (
-        sheetName === "场地编号" ||
-        sheetName === TRASH_SHEET_NAME ||
-        sheetName === AUDIT_SHEET_NAME
-      )
-        return;
-      const lastRow = sheet.getLastRow();
-      if (lastRow <= 1) return;
-      const lastColumn = sheet.getLastColumn();
-      const data = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
-      const headers = data[0];
-      if (!headers || headers[0] !== "ID") return;
-
-      // ⚡ 性能优化：改成只删中标的那几行（从后往前删，避免删除后行号错位），
-      // 不再是「整张表清空再整表重写」这种对大表很吃资源的做法
-      for (let i = data.length - 1; i >= 1; i--) {
-        if (idSet.has(data[i][0])) {
-          archiveToTrash(trashSheet, headers, data[i], operatorEmail); // 🗑️ 先归档到回收站再真正删除，误删可复原
-          logAudit("删除", operatorEmail, data[i], headers);
-          sheet.deleteRow(i + 1); // data 是 0-index，工作表行号是 1-index，第 1 行是表头
-          deletedCount++;
-        }
-      }
+  return withScriptLock_(() => {
+    // 按月份分组：每个月份只读一次工作表
+    const datesByMonth = new Map();
+    dates.forEach((d) => {
+      const mk = d.substring(0, 7);
+      if (!datesByMonth.has(mk)) datesByMonth.set(mk, []);
+      datesByMonth.get(mk).push(d);
     });
-    return { success: true, count: deletedCount };
-  } catch (err) {
-    throw new Error(err.message);
-  }
+
+    // 🚧 第一步：整批「日期 × 场地」全部扫描过、全部无冲突才写入（拿到锁之后才扫描，
+    // 所以扫描完到写入之间不会有别人插队写进同一时段）
+    datesByMonth.forEach((monthDates, monthKey) => {
+      const index = buildMonthConflictIndex_(monthKey);
+      monthDates.forEach((dateString) => {
+        venues.forEach((venueCode) => {
+          const conflict = findConflictInIndex_(index, venueCode, dateString, range, null);
+          if (conflict) throw new Error(conflictMessage_(venueCode, dateString, conflict, false));
+        });
+      });
+    });
+
+    // ✅ 第二步：确认无冲突后，每个月份工作表一次整批写入
+    const timestamp = nowStamp_();
+    const formattedFillDate = formatDateStr(todayIso_());
+    const auditRows = [];
+    let count = 0;
+    datesByMonth.forEach((monthDates, monthKey) => {
+      const sheet = getSheetForDate_(monthKey + "-01");
+      const sheetHeaders = getSheetHeaders_(sheet);
+      const rows = [];
+      monthDates.forEach((dateString) => {
+        venues.forEach((venueCode) => {
+          const rec = {
+            ID: "ID_" + Utilities.getUuid(),
+            场地: venueCode,
+            活动: input.event,
+            单位: input.unit,
+            "时间(开始)": input.timeStart,
+            "时间(结束)": input.timeEnd,
+            填写人: filler,
+            填写日期: formattedFillDate,
+            使用日期: formatDateStr(dateString),
+            系统时间戳: timestamp,
+          };
+          const row = recordToSheetRow_(sheetHeaders, rec);
+          rows.push(row);
+          auditRows.push(buildAuditRow_("新增", operatorEmail, row, sheetHeaders));
+        });
+      });
+      appendRowsAsText_(sheet, rows);
+      count += rows.length;
+    });
+    appendAuditRows_(auditRows);
+    return { success: true, count: count };
+  });
 }
 
-function updateRecord(id, record) {
-  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    // 🆕「填写人」留空就自动带出当前登入者的姓名+email，不强迫一定要手动填
-    if (!record.filler || String(record.filler).trim() === "") {
-      record.filler = getCurrentUserDisplayLabel(operatorEmail);
-    }
-    let singleVenue =
-      record.venues && record.venues.length > 0 ? record.venues[0] : "";
-
-    // 🚧 编辑记录同样要检查冲突，但排除自己原本这一笔，避免跟自己"撞档"
-    const conflict = findVenueTimeConflict(
-      singleVenue,
-      record.useDate,
-      record.timeStart,
-      record.timeEnd,
-      id,
-    );
-    if (conflict) {
-      throw new Error(
-        `⛔ 场地时段冲突：【${singleVenue}】在 ${formatDateStr(record.useDate)} 已有借用记录「${conflict.conflictEvent}」（${conflict.conflictTime}），与本次修改后的时间重叠，请修改时间或更换场地后再保存。`,
-      );
-    }
-
-    batchDeleteRecords([id]); // 旧版本会被归档到回收站、并留一笔"删除"审计记录
-    const sheet = getSheetForDate(record.useDate);
-    const formattedUseDate = formatDateStr(record.useDate);
-    const formattedFillDate = formatDateStr(record.fillDate);
-    const timestamp = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd HH:mm:ss",
-    );
-    const rowValues = [
-      id,
-      singleVenue,
-      record.event,
-      record.unit,
-      record.timeStart,
-      record.timeEnd,
-      record.filler,
-      formattedFillDate,
-      formattedUseDate,
-      timestamp,
-    ];
-    sheet.appendRow(rowValues);
-    logAudit("修改", operatorEmail, rowValues, HEADERS);
-    return { success: true };
-  } catch (err) {
-    throw new Error(err.message);
-  }
-}
-
-function getSheetForDate(dateString) {
+// 在月份工作表里找某一笔记录的位置。monthHints（可选）是前端带来的"这笔记录大概在哪个月"
+// 提示，先找这几张表，找不到才退回扫描全部月份表。只读 A 栏（ID），不读整张表。
+function locateRecords_(ids, monthHints) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const monthKey = dateString.substring(0, 7);
+  const remaining = new Set((ids || []).map(String));
+  const found = []; // { sheet, rowNumber, id }
+  const visited = new Set();
+  const scan = (sheet) => {
+    if (!sheet || remaining.size === 0) return;
+    const name = sheet.getName();
+    if (visited.has(name)) return;
+    visited.add(name);
+    if (sheet.getType() !== SpreadsheetApp.SheetType.GRID || !isRecordSheetName_(name)) return;
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return;
+    const col = sheet.getRange(1, 1, lastRow, 1).getValues();
+    if (col[0][0] !== "ID") return;
+    for (let i = 1; i < col.length; i++) {
+      const id = String(col[i][0]);
+      if (remaining.has(id)) {
+        found.push({ sheet: sheet, rowNumber: i + 1, id: id });
+        remaining.delete(id);
+      }
+    }
+  };
+  uniqueNonEmpty_(monthHints).forEach((mk) => scan(ss.getSheetByName(mk)));
+  if (remaining.size > 0) ss.getSheets().forEach(scan);
+  return found;
+}
+
+function batchDeleteRecords(ids, monthHints) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  if (!ids || ids.length === 0) return { success: true, count: 0 };
+  return withScriptLock_(() => {
+    const found = locateRecords_(ids, monthHints);
+    if (found.length === 0) return { success: true, count: 0 };
+
+    // 按工作表分组，每张表从下往上删（避免删除后行号错位）
+    const bySheet = new Map();
+    found.forEach((f) => {
+      const name = f.sheet.getName();
+      if (!bySheet.has(name)) bySheet.set(name, { sheet: f.sheet, rows: [] });
+      bySheet.get(name).rows.push(f.rowNumber);
+    });
+
+    const trashRows = [];
+    const auditRows = [];
+    bySheet.forEach(({ sheet, rows }) => {
+      const lastCol = sheet.getLastColumn();
+      const headers = getSheetHeaders_(sheet);
+      rows.sort((a, b) => b - a);
+      // 先把要删的整行读出来归档（误删可以从回收站找回）
+      rows.forEach((rowNumber) => {
+        const values = sheet.getRange(rowNumber, 1, 1, lastCol).getValues()[0];
+        trashRows.push(buildTrashRow_(headers, values, operatorEmail));
+        auditRows.push(buildAuditRow_("删除", operatorEmail, values, headers));
+      });
+      ensureSpareRow_(sheet);
+      rows.forEach((rowNumber) => sheet.deleteRow(rowNumber));
+    });
+    appendRowsAsText_(getTrashSheet_(), trashRows);
+    appendAuditRows_(auditRows);
+    return { success: true, count: found.length };
+  });
+}
+
+// ✏️ 修改单笔记录：原地改写那一行（以前是"先删除再新增"，会有几个问题：记录拿到新的
+// 系统时间戳、从「🔗同批」里脱离；中途失败时原记录已经删掉；被别人删掉的记录还会"复活"）。
+// 如果使用日期换到别的月份，才会从旧月份表搬到新月份表。
+function updateRecord(id, record, monthHint) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  const input = normalizeRecordInput_(record);
+  const venues = uniqueNonEmpty_(record.venues);
+  if (venues.length !== 1) throw new Error("⛔ 修改单笔记录时场地只能选一个。");
+  const venueCode = venues[0];
+  const range = validateTimeRange_(input.timeStart, input.timeEnd);
+  const useDate = Utilities.formatDate(
+    parseIsoDate_(record.useDate, "使用日期"),
+    Session.getScriptTimeZone(),
+    "yyyy-MM-dd",
+  );
+  const filler = input.filler || getCurrentUserDisplayLabel_(operatorEmail);
+
+  return withScriptLock_(() => {
+    const found = locateRecords_([id], [monthHint])[0];
+    if (!found) {
+      throw new Error("⛔ 找不到这笔记录（可能已经被其他管理员删除）。请重新整理列表后再操作。");
+    }
+    const oldSheet = found.sheet;
+    const oldHeaders = getSheetHeaders_(oldSheet);
+    const oldValues = oldSheet.getRange(found.rowNumber, 1, 1, oldSheet.getLastColumn()).getValues()[0];
+    const oldObj = rowToRecordObj(oldHeaders, oldValues);
+
+    // 🚧 冲突检查（排除自己原本这一笔）
+    const targetMonth = useDate.substring(0, 7);
+    const conflict = findConflictInIndex_(buildMonthConflictIndex_(targetMonth), venueCode, useDate, range, id);
+    if (conflict) throw new Error(conflictMessage_(venueCode, useDate, conflict, true));
+
+    const rec = {
+      ID: String(id),
+      场地: venueCode,
+      活动: input.event,
+      单位: input.unit,
+      "时间(开始)": input.timeStart,
+      "时间(结束)": input.timeEnd,
+      填写人: filler,
+      填写日期: formatDateStr(todayIso_()),
+      使用日期: formatDateStr(useDate),
+      // 保留原本的系统时间戳，修改后仍然属于同一批（🔗同批 还能一起选到）
+      系统时间戳: oldObj["系统时间戳"] || nowStamp_(),
+    };
+
+    // 旧版本照样归档进回收站，改错了还能找回原本的内容
+    appendRowsAsText_(getTrashSheet_(), [buildTrashRow_(oldHeaders, oldValues, operatorEmail)]);
+
+    let newRow;
+    let newHeaders;
+    if (oldSheet.getName() === targetMonth) {
+      newHeaders = oldHeaders;
+      newRow = recordToSheetRow_(oldHeaders, rec);
+      appendRowsAsText_(oldSheet, [newRow], 1, found.rowNumber); // 原地覆写这一行
+    } else {
+      const newSheet = getSheetForDate_(useDate);
+      newHeaders = getSheetHeaders_(newSheet);
+      newRow = recordToSheetRow_(newHeaders, rec);
+      appendRowsAsText_(newSheet, [newRow]);
+      ensureSpareRow_(oldSheet);
+      oldSheet.deleteRow(found.rowNumber);
+    }
+    appendAuditRows_([buildAuditRow_("修改", operatorEmail, newRow, newHeaders)]);
+    return { success: true };
+  });
+}
+
+function getSheetForDate_(dateString) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const monthKey = String(dateString).substring(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) throw new Error("⛔ 日期格式不正确：" + dateString);
   let sheet = ss.getSheetByName(monthKey);
   if (!sheet) {
     sheet = ss.insertSheet(monthKey);
     sheet.appendRow(HEADERS);
     sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold"); // 表头栏位数改成跟着 HEADERS 走，不再写死到 I 列
-    // 🔧 关键修复：时间(开始)/时间(结束) 两栏强制设成纯文本格式，防止表格把 "06:00"
-    // 这种文本自动识别转存成 Date/时间序列值（这正是"借用时间显示成一大串英文 Date"
-    // 这个问题的根源）。整栏都设，覆盖未来任何一行新增的数据。
-    const startCol = HEADERS.indexOf("时间(开始)") + 1;
-    const endCol = HEADERS.indexOf("时间(结束)") + 1;
-    if (startCol > 0 && endCol > 0) {
-      sheet.getRange(1, startCol, sheet.getMaxRows(), 2).setNumberFormat("@");
-    }
+    sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold");
+    // 🔧 整张资料区设成纯文本：防止 "06:00" 被转成时间、"5/10/2026" 被按地区设定转成日期
+    // （地区设定是美国时日/月还会对调），也防止 "=..." "-..." 开头的文字被当成公式
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, HEADERS.length).setNumberFormat("@");
   }
   return sheet;
 }
@@ -1442,6 +1632,11 @@ function getSheetForDate(dateString) {
  * 工作表会自动跳过。之后新增的记录会自动套用新结构，不需要再跑第二次。
  */
 function migrateAllSheetsToSplitTimeSchema() {
+  requireOwner_(); // 🔐 只能由拥有者在编辑器手动运行，网页上任何人都呼叫不到
+  return withScriptLock_(migrateAllSheetsToSplitTimeSchemaLocked_);
+}
+
+function migrateAllSheetsToSplitTimeSchemaLocked_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = ss.getSheets();
   let migratedCount = 0;
@@ -1450,12 +1645,7 @@ function migrateAllSheetsToSplitTimeSchema() {
   sheets.forEach((sheet) => {
     if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
     const sheetName = sheet.getName();
-    if (
-      sheetName === "场地编号" ||
-      sheetName === TRASH_SHEET_NAME ||
-      sheetName === AUDIT_SHEET_NAME
-    )
-      return;
+    if (!isRecordSheetName_(sheetName)) return;
 
     const lastRow = sheet.getLastRow();
     const lastColumn = sheet.getLastColumn();
@@ -1519,6 +1709,11 @@ function migrateAllSheetsToSplitTimeSchema() {
  * 不会再发生同样的问题，不需要重复运行。
  */
 function fixTimeColumnFormatting() {
+  requireOwner_(); // 🔐 只能由拥有者在编辑器手动运行，网页上任何人都呼叫不到
+  return withScriptLock_(fixTimeColumnFormattingLocked_);
+}
+
+function fixTimeColumnFormattingLocked_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = ss.getSheets();
   let fixedSheetCount = 0;
@@ -1610,7 +1805,7 @@ function fixTimeColumnFormatting() {
 // 反正 SpreadsheetApp 本来就是这个项目最基本、最不会被单独收回的权限，不会再有
 // 这种权限时不时被撤销的问题。
 //
-// v3（这一版）：A2 存的从"直接手打 HTML"改成 **Markdown 语法**（# 标题、**粗体**、
+// v4（这一版，CLAUDE.md 里的版本编号）：A2 存的从"直接手打 HTML"改成 **Markdown 语法**（# 标题、**粗体**、
 // - 条列、[文字](链接) 之类），后端完全不处理转换——Markdown → HTML 的转换挪到
 // 前端做（Table.html/Admin.html 都用同一个 CDN 载入的 marked.js），后端这里只是
 // 单纯存/取一段文字，跟内容到底是 Markdown 还是别的格式无关。
@@ -1636,7 +1831,7 @@ const ANNOUNCEMENT_UPDATED_ROW = 2;
 const ANNOUNCEMENT_UPDATED_COL = 2; // B2：最后更新时间，由下面的 onEdit(e) 简易触发器自动写入
 
 // 取得《公告栏》工作表，第一次使用时自动建立（含说明文字、范例 Markdown、防呆排版设置）
-function getOrCreateAnnouncementSheet() {
+function getOrCreateAnnouncementSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(ANNOUNCEMENT_SHEET_NAME);
   if (!sheet) {
@@ -1656,6 +1851,7 @@ function getOrCreateAnnouncementSheet() {
     sheet.setRowHeight(ANNOUNCEMENT_CONTENT_ROW, 220);
     sheet
       .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
+      .setNumberFormat("@") // 纯文本：Markdown 常见的 "- 条列" 开头不会被当成公式变成 #ERROR!
       .setWrap(true)
       .setVerticalAlignment("top")
       .setValue(
@@ -1675,7 +1871,7 @@ function getOrCreateAnnouncementSheet() {
 
 function getAnnouncementContent() {
   try {
-    const sheet = getOrCreateAnnouncementSheet();
+    const sheet = getOrCreateAnnouncementSheet_();
     const markdown = String(
       sheet
         .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
@@ -1712,31 +1908,26 @@ function getAnnouncementContent() {
 // B2 的"最后更新时间"也写一次，不然透过管理端保存的话，时间戳不会自动更新。
 function saveAnnouncementContent(markdown) {
   const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
-  try {
-    const sheet = getOrCreateAnnouncementSheet();
-    const content = String(markdown == null ? "" : markdown);
+  const content = String(markdown == null ? "" : markdown);
+  return withScriptLock_(() => {
+    const sheet = getOrCreateAnnouncementSheet_();
+    // ⚠️ 先设成纯文本再写：Markdown 条列常用 "- " 开头，Google Sheets 会把 "-"、"+"、"="
+    // 开头的文字当成公式解析，存进去会变成 #ERROR!
     sheet
       .getRange(ANNOUNCEMENT_CONTENT_ROW, ANNOUNCEMENT_CONTENT_COL)
+      .setNumberFormat("@")
       .setValue(content);
 
     const now = new Date();
-    sheet
-      .getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL)
-      .setValue(now);
+    sheet.getRange(ANNOUNCEMENT_UPDATED_ROW, ANNOUNCEMENT_UPDATED_COL).setValue(now);
 
-    logSpecialStatusAudit("更新公告栏", operatorEmail, "更新了矩阵总表公告栏内容");
+    logSpecialStatusAudit_("更新公告栏", operatorEmail, "更新了矩阵总表公告栏内容");
 
     return {
       success: true,
-      updated: Utilities.formatDate(
-        now,
-        Session.getScriptTimeZone(),
-        "yyyy-MM-dd HH:mm",
-      ),
+      updated: Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm"),
     };
-  } catch (err) {
-    throw new Error(err.message);
-  }
+  });
 }
 
 // 🕒 简易触发器（Apps Script 看到项目里有个函数就叫 onEdit(e) 会自动生效，不需要
@@ -1750,7 +1941,15 @@ function onEdit(e) {
   try {
     if (!e || !e.range) return;
     const sheet = e.range.getSheet();
-    if (sheet.getName() !== ANNOUNCEMENT_SHEET_NAME) return;
+    const sheetName = sheet.getName();
+
+    // ⚡ 《场地编号》《特殊状态》的文字一被手动修改，就清掉设定缓存，页面下次读取就是最新的
+    // （只改格子底色不会触发 onEdit，那种情况最多 5 分钟后缓存自动过期）
+    if (sheetName === "场地编号" || sheetName === SPECIAL_STATUS_SHEET_NAME) {
+      clearConfigCache_();
+      return;
+    }
+    if (sheetName !== ANNOUNCEMENT_SHEET_NAME) return;
 
     const editedRow1 = e.range.getRow();
     const editedRowCount = e.range.getNumRows();

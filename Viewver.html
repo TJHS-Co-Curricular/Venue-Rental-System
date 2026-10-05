@@ -6,11 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>场地借用表 · 日历</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.css" rel="stylesheet">
   <style>
     :root {
       /* 🎨 跟矩阵总表（Table.html）共用同一套设计变量，两个公众页面看起来是同一个系统 */
       --accent: #2f6fed;
+      --holiday-tint: #fff59d; /* 🏖️ 假期底色（三个公众页面同一个颜色） */
+      --holiday-ink: #854d0e;
       --accent-dark: #1f4fb8;
       --ink: #1f2733;
       --muted: #64748b;
@@ -145,6 +146,19 @@
       background-color: #eaf2ff !important;
     }
 
+    /* 🏖️ 假期：用 FullCalendar 的背景事件（display:'background'）把整天填成黄色底，
+       月视图/周视图都适用；FullCalendar 预设背景事件只有 0.3 透明度，这里改成实色 */
+    .fc .fc-bg-event.holiday-bg {
+      background: var(--holiday-tint) !important;
+      opacity: 1 !important;
+    }
+
+    .fc .fc-bg-event.holiday-bg .fc-event-title {
+      color: var(--holiday-ink);
+      font-style: normal;
+      font-weight: 700;
+    }
+
     .fc-event {
       cursor: pointer !important;
       padding: 2px 4px;
@@ -230,6 +244,10 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js"></script>
+  <!-- 🈶 FullCalendar 的中文语系要另外载入（以前只写了 locale: 'zh-cn' 却没载入语系档，
+       结果一周从星期日开始、"+2 more""No events to display" 显示英文）。
+       FullCalendar v6 的 CSS 是由上面的 JS 自动注入的，不需要另外的 .css 链接 -->
+  <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.8/locales/zh-cn.global.min.js"></script>
 
   <script>
     let unitColorMap = new Map(); // 🎨 单位名 -> "#rrggbb"，来自《场地编号》"单位"列的手动格子底色（已排除学会团体）
@@ -248,19 +266,68 @@
     }
 
     let specialStatusColorMap = new Map(); // 🚧 状态名 -> "#rrggbb"，来自《特殊状态》表 A 列的手动列出+上色
+    let unitColorReady = Promise.resolve();
+
+    // 🏖️ 《场地编号》表的假期设定（每年通用的 [{month, start, end}]），只在打开页面时拉一次；
+    // 包成 Promise 是因为日历的 events 回调可能比这个请求先跑，回调里 .then() 等它就好
+    let holidaySettingsPromise = null;
+    function loadHolidaySettingsOnce() {
+      if (!holidaySettingsPromise) {
+        holidaySettingsPromise = new Promise(function (resolve) {
+          google.script.run
+            .withSuccessHandler(function (list) { resolve(list || []); })
+            .withFailureHandler(function () { resolve([]); })
+            .getHolidaySettings();
+        });
+      }
+      return holidaySettingsPromise;
+    }
+
+    // 🏖️ 把可视区间 [startDateStr, endDateStr] 里落在假期的日子，转成 FullCalendar 背景事件（黄色底）
+    function buildHolidayBackgroundEvents(holidays, startDateStr, endDateStr) {
+      const events = [];
+      if (!holidays || holidays.length === 0) return events;
+      const cur = new Date(startDateStr + 'T00:00:00');
+      const end = new Date(endDateStr + 'T00:00:00');
+      while (cur <= end) {
+        const m = cur.getMonth() + 1;
+        const d = cur.getDate();
+        const isHoliday = holidays.some(h => Number(h.month) === m && d >= Number(h.start) && d <= Number(h.end));
+        if (isHoliday) {
+          events.push({
+            title: '🏖️ 假期',
+            start: formatLocalDate(cur),
+            allDay: true,
+            display: 'background',
+            classNames: ['holiday-bg'],
+            extendedProps: { isHoliday: true }
+          });
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      return events;
+    }
 
     document.addEventListener('DOMContentLoaded', function () {
+      loadHolidaySettingsOnce();
+
       // 🎨 跟矩阵总表共用同一个后端接口，拉取行政单位的颜色设定，日历事件也用同样的颜色区分
-      google.script.run
-        .withSuccessHandler(function (colorList) {
-          colorList = colorList || [];
-          unitColorMap = new Map(colorList.map(item => [item.unit, item.color]));
-          renderUnitLegend(colorList);
-        })
-        .withFailureHandler(function () {
-          unitColorMap = new Map();
-        })
-        .getUnitColorMap();
+      // 包成 Promise：日历第一次拉事件时要等颜色对照表回来再上色（以前如果记录先回来，
+      // 第一个月份的事件会全部显示成预设蓝色，要翻页才会变成单位颜色）
+      unitColorReady = new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (colorList) {
+            colorList = colorList || [];
+            unitColorMap = new Map(colorList.map(item => [String(item.unit).trim(), item.color]));
+            renderUnitLegend(colorList);
+            resolve();
+          })
+          .withFailureHandler(function () {
+            unitColorMap = new Map();
+            resolve();
+          })
+          .getUnitColorMap();
+      });
 
       // 🚧 跟矩阵总表共用同一个后端接口，拉取特殊状态类型的颜色设定，日历事件也用同样的颜色区分
       google.script.run
@@ -360,7 +427,7 @@
           }
         }
 
-        const unitName = item.单位 || '';
+        const unitName = String(item.单位 || '').trim(); // 跟矩阵总表一样先去掉前后空格再比对颜色
         const unitColor = unitColorMap.get(unitName);
 
         const eventObj = {
@@ -436,6 +503,9 @@
         slotMinTime: '06:00:00', // 早上从 6 点开始显示
         slotMaxTime: '23:00:00', // 晚上显示到 11 点
         allDayText: '全天/无明确时间', // 兼容那些没有填写具体时间的数据
+        // 🕒 时间一律显示成 24 小时制 "09:00"（中文语系预设会显示成 "9时"）
+        eventTimeFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
+        slotLabelFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
 
         // ⚡ 性能优化：改用 FullCalendar 内建的异步事件源，每次翻页/切视图只会带来
         // 当前可视区间需要的数据（后端 readRecordsForRange 只读交集到的那几张月份工作表），
@@ -447,9 +517,9 @@
           endDateExclusive.setDate(endDateExclusive.getDate() - 1);
           const endDateStr = formatLocalDate(endDateExclusive);
 
-          // 🚧 一般借用记录 + 特殊状态标记是两个独立接口，两个都回来了才一次性交给 FullCalendar，
-          // 避免翻页时特殊状态标记还没到、画面先漏画一次
-          let pending = 2;
+          // 🚧 一般借用记录 + 特殊状态标记 + 🏖️ 假期背景是三个独立来源，全部回来了才一次性交给
+          // FullCalendar，避免翻页时某一块还没到、画面先漏画一次
+          let pending = 3;
           let combinedEvents = [];
           const finishOne = function () {
             pending--;
@@ -461,8 +531,10 @@
 
           google.script.run
             .withSuccessHandler(function (records) {
-              combinedEvents = combinedEvents.concat(buildEventsFromRecords(records || []));
-              finishOne();
+              unitColorReady.then(function () {
+                combinedEvents = combinedEvents.concat(buildEventsFromRecords(records || []));
+                finishOne();
+              });
             })
             .withFailureHandler(function (err) {
               alert('读取记录失败: ' + (err && err.message ? err.message : err));
@@ -479,10 +551,16 @@
               finishOne();
             })
             .readSpecialStatusForRange(startDateStr, endDateStr);
+
+          loadHolidaySettingsOnce().then(function (holidays) {
+            combinedEvents = combinedEvents.concat(buildHolidayBackgroundEvents(holidays, startDateStr, endDateStr));
+            finishOne();
+          });
         },
 
         eventClick: function (info) {
           const p = info.event.extendedProps;
+          if (p.isHoliday) return; // 🏖️ 假期背景只是底色标示，没有明细可看
           if (p.isSpecialStatus) {
             // 🚧 特殊状态事件跟一般借用记录字段不太一样，复用同一个明细弹窗、简化显示
             document.getElementById('modalVenue').innerText = p.venue;

@@ -8,6 +8,9 @@
   <style>
     :root {
       --accent: #2f6fed;
+      --holiday-tint: #fff59d; /* 🏖️ 假期底色（三个公众页面同一个颜色） */
+      --holiday-head: #fde047;
+      --holiday-ink: #854d0e;
       --accent-dark: #1f4fb8;
       --ink: #1f2733;
       --muted: #64748b;
@@ -148,6 +151,16 @@
       border-left: none;
     }
 
+    /* 🏖️ 假期表头：黄色底；放在 .is-today 前面，假期刚好是今天时表头还是显示"今天"的蓝色 */
+    .day-head.is-holiday {
+      background: var(--holiday-head);
+      color: var(--holiday-ink);
+    }
+
+    .day-head.is-holiday .dt {
+      color: var(--holiday-ink);
+    }
+
     .day-head.is-today {
       background: var(--today-tint);
       color: var(--accent-dark);
@@ -195,6 +208,19 @@
     }
 
     .day-col.has-special {
+      background-color: var(--special-tint);
+    }
+
+    /* 🏖️ 假期（《场地编号》表的假期设定）：整栏黄色底，跟矩阵总表/日历一致。
+       放在 is-today / has-special 后面所以优先显示黄色；特殊状态还是有顶部 🚧 小标签，
+       借用记录的色块也是画在上面一层，不会被盖掉 */
+    .day-col.is-holiday {
+      background-color: var(--holiday-tint);
+    }
+
+    /* 🚧 特殊状态的底色优先于假期（跟矩阵总表一致），颜色来自《特殊状态》表 A 列的设定，
+       由 JS 写进每一栏自己的 --special-tint */
+    .day-col.has-special.is-holiday {
       background-color: var(--special-tint);
     }
 
@@ -460,7 +486,8 @@
       if (c.length !== 6) return '#ffffff';
       const r = parseInt(c.substr(0, 2), 16), g = parseInt(c.substr(2, 2), 16), b = parseInt(c.substr(4, 2), 16);
       const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-      return luma > 170 ? '#1f2733' : '#ffffff';
+      // 门槛跟日历视图一样（亮度 > 0.6），同一个单位颜色在两个页面上的字色才会一致
+      return luma > 0.6 * 255 ? '#1f2733' : '#ffffff';
     }
 
     function renderClock() {
@@ -483,11 +510,23 @@
       return el;
     }
 
-    function makeDayHead(dateStr, isToday) {
+    // 🏖️ 判断某一天（"yyyy-MM-dd"）是不是假期：假期设定每年通用，只比对月份跟日期
+    function isHolidayDate(holidays, dateStr) {
+      if (!holidays || holidays.length === 0) return false;
+      const parts = dateStr.split('-');
+      const m = Number(parts[1]);
+      const d = Number(parts[2]);
+      return holidays.some(function (h) {
+        return Number(h.month) === m && d >= Number(h.start) && d <= Number(h.end);
+      });
+    }
+
+    function makeDayHead(dateStr, isToday, isHoliday) {
       const parts = dateStr.split('-');
       const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
       const el = document.createElement('div');
-      el.className = 'day-head' + (isToday ? ' is-today' : '');
+      el.className = 'day-head' + (isHoliday ? ' is-holiday' : '') + (isToday ? ' is-today' : '');
+      if (isHoliday) el.title = '🏖️ 假期';
       el.innerHTML =
         '<span class="wd">星期' + WEEKDAY_LABELS[(d.getDay() + 6) % 7] + '</span>' +
         '<span class="dt">' + Number(parts[1]) + '/' + Number(parts[2]) + '</span>';
@@ -539,7 +578,7 @@
       // 表头：左上角空白 + 7 天
       grid.appendChild(makeCornerHead());
       data.days.forEach(function (dateStr) {
-        grid.appendChild(makeDayHead(dateStr, dateStr === todayStr));
+        grid.appendChild(makeDayHead(dateStr, dateStr === todayStr, isHolidayDate(data.holidays, dateStr)));
       });
 
       // 时间轴 + 7 天的格子区，每一列都一样高：SLOT_COUNT * ROW_H
@@ -551,7 +590,8 @@
 
       data.days.forEach(function (dateStr) {
         const dayCol = document.createElement('div');
-        dayCol.className = 'day-col' + (dateStr === todayStr ? ' is-today' : '');
+        dayCol.className = 'day-col' + (dateStr === todayStr ? ' is-today' : '') +
+          (isHolidayDate(data.holidays, dateStr) ? ' is-holiday' : '');
         dayCol.style.height = bodyHeight + 'px';
         dayCol.dataset.date = dateStr;
 
@@ -560,8 +600,14 @@
         const specialToday = venueSpecial.filter(function (s) { return s.date === dateStr; });
         if (specialToday.length > 0) {
           dayCol.classList.add('has-special');
+          // 🎨 用《特殊状态》表设定的颜色（跟上方图例一致）；没上色才用预设橘色
+          const statusColor = (specialToday.map(function (s) { return s.color; })
+            .find(function (c) { return HEX_COLOR_RE.test(c || ''); })) || '#d66c14';
+          dayCol.style.setProperty('--special-tint', statusColor + '24');
           const badge = document.createElement('div');
           badge.className = 'special-badge';
+          badge.style.background = statusColor;
+          badge.style.color = pickTextColorForBg(statusColor);
           const statusText = specialToday.map(function (s) { return s.status; }).join(' / ');
           badge.textContent = '🚧 ' + statusText;
           badge.title = statusText;
@@ -583,8 +629,9 @@
           block.style.top = top + 'px';
           block.style.height = height + 'px';
 
-          const unitColorEntry = (data.unitColors || []).find(function (u) { return u.unit === rec['单位']; });
-          if (unitColorEntry && unitColorEntry.color) {
+          const recUnit = String(rec['单位'] || '').trim();
+          const unitColorEntry = (data.unitColors || []).find(function (u) { return String(u.unit).trim() === recUnit; });
+          if (unitColorEntry && HEX_COLOR_RE.test(unitColorEntry.color || '')) {
             block.style.background = unitColorEntry.color;
             block.style.color = pickTextColorForBg(unitColorEntry.color);
           }
@@ -682,13 +729,19 @@
       updateNowLines();
     }
 
+    let boardRequestInFlight = false;
     function loadBoardData() {
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      // 🛡️ 上一次请求还没回来就不再叠加新的请求（网路慢的时候避免旧资料后到、盖掉新资料）
+      if (boardRequestInFlight) return;
+      boardRequestInFlight = true;
       google.script.run
         .withSuccessHandler(function (data) {
+          boardRequestInFlight = false;
           renderBoard(data);
         })
         .withFailureHandler(function (err) {
+          boardRequestInFlight = false;
           // 🛡️ 电视看板不会有人在场手动重试，读取失败就先保留上一次画面（如果有的话），
           // 只在完全没资料时才盖上错误提示，并且过一段时间自动再试一次
           if (!boardData) {
@@ -706,7 +759,21 @@
 
     loadBoardData();
     setInterval(loadBoardData, REFRESH_MS);
-    setTimeout(function () { location.reload(); }, RELOAD_MS);
+    // 🔄 每 6 小时整页重新载入一次（也顺便套用重新部署后的新版程序）。
+    // ⚠️ 以前是时间到就直接 reload：那一刻刚好断网、或 Google 登入过期，画面就会停在
+    // 浏览器错误页 / 登入页，要有人走过去手动处理。现在先确认"网路通、而且后端叫得到"
+    // 才重新载入；确认失败就保留目前画面，10 分钟后再试。
+    function safeReload() {
+      if (navigator.onLine === false) {
+        setTimeout(safeReload, 10 * 60 * 1000);
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function () { location.reload(); })
+        .withFailureHandler(function () { setTimeout(safeReload, 10 * 60 * 1000); })
+        .getWebAppUrl();
+    }
+    setTimeout(safeReload, RELOAD_MS);
   </script>
 </body>
 
