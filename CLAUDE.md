@@ -57,7 +57,7 @@ Docs/
 - 新增公开函数要先归进「权限模型」表格里的其中一类：会写入的 → 第一行 `requireAdminAccess()` + 整个包在 `withScriptLock_()`；只读公开 → 不能泄漏管理资讯；维护 → `requireOwner_()`。
 - 常量全大写下划线（`MAX_RECORDS_PER_SUBMIT`、`TV_BOARD_VENUE_NAMES`）；工作表名称用常量（`TRASH_SHEET_NAME`、`SPECIAL_STATUS_SHEET_NAME`…），不要散落字面量。
 - 借用记录在程序里用中文栏名当键（`r.使用日期`、`r['时间(开始)']`），跟 `HEADERS` 一致。
-- 日期：前后端之间一律 `yyyy-MM-dd`；写进表格是 `d/M/yyyy` 文字（`formatDateStr`）；时间一律 `HH:mm` 文字。本地今天用 `localTodayIso()` / `todayIso_()`，不要用 `toISOString()` 或 `valueAsDate = new Date()`（UTC，马来西亚早上 8 点前会变成昨天）。
+- 日期：前后端之间一律 `yyyy-MM-dd`；写进表格是 `dd/MM/yyyy` 文字（`formatDateStr`，日和月补 0；读取时 `normalizeDateToISO` 也兼容不补 0 的旧资料）；时间一律 `HH:mm` 文字。本地今天用 `localTodayIso()` / `todayIso_()`，不要用 `toISOString()` 或 `valueAsDate = new Date()`（UTC，马来西亚早上 8 点前会变成昨天）。
 - 前端：表格资料放进 `innerHTML` 前一律 `escapeHtml()`；不要把资料拼进 `onclick="..."` 字符串，改用 `addEventListener` 或 `data-*` + 事件委派；每个 `google.script.run` 都要有 `withFailureHandler`。
 - 颜色只接受 6 位色码（`HEX_COLOR_RE`）。
 - 三个礼堂名单有三份拷贝，改一份要改全部：`Code.js` 的 `TV_BOARD_VENUE_NAMES`、`Admin.html` 的 `MAJOR_HALL_NAMES`、`Table.html` 的 `PREVIEW_HALL_NAMES`。
@@ -128,8 +128,8 @@ D 单位         "编号-名称"
 E 时间(开始)    "HH:mm" 文字
 F 时间(结束)    "HH:mm" 文字
 G 填写人        留空时自动带入 "姓名 (email)"
-H 填写日期      d/M/yyyy 文字，服务器决定（todayIso_）
-I 使用日期      d/M/yyyy 文字
+H 填写日期      dd/MM/yyyy 文字，服务器决定（todayIso_）
+I 使用日期      dd/MM/yyyy 文字
 J 系统时间戳    同一次提交共享同一个值 = "同批"；修改时保留。新资料由 batchStamp_() 产生
                "yyyy-MM-dd HH:mm:ss.SSS"（精确到毫秒，避免同一秒的两次提交被当成同一批）；
                旧资料只到秒，照样可用。它是批次的识别码，不要拿来做日期计算
@@ -184,6 +184,7 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 | 拥有者维护 | 第一行 `requireOwner_()`（`getActiveUser() === getEffectiveUser()`，只有拥有者本人在编辑器运行才成立） | `migrateAllSheetsToSplitTimeSchema`、`fixTimeColumnFormatting`、`clearConfigCache`、`cleanupOldBookingMonthSheets`、`installMonthlyCleanupTrigger`、`uninstallMonthlyCleanupTrigger` |
 | 定时触发器入口 | `isGenuineTriggerEvent_(e, 名称)` 比对 `e.triggerUid` 是项目里真实存在的触发器，否则退回 `requireOwner_()`。**函数名不能改**（已安装的触发器绑定这个名字） | `cleanupOldTrashAndAuditLogs(e)` |
 | 公开读取 | 不需白名单，只读 | `getVenuesFromSheet`、`getUnitsFromSheet`、`getUnitColorMap`、`getSpecialStatusesFromSheet`、`getHolidaySettings`、`readRecordsForMonth`、`readRecordsForRange`、`readSpecialStatusForMonth`、`readSpecialStatusForRange`、`readSpecialStatusList`、`getTvBoardWeekData`、`getAnnouncementContent`、`getWebAppUrl` |
+| 公开但无害（历史原因没加 `_`） | 浏览器叫得到，但不会写入或泄漏管理资讯 | `requireAdminAccess`（只回传访问者自己的 email，不是管理员就报错）、`onEdit`（简易触发器；从浏览器呼叫时传不进真正的表格范围，会被 `try/catch` 安静跳过） |
 | 私有辅助 | **名字以 `_` 结尾**，`google.script.run` 呼叫不到 | 所有会写表格、建工作表、或泄漏资讯的辅助函数 |
 
 **新增函数时**：会写入的公开函数要 `requireAdminAccess()` + `withScriptLock_()`；辅助函数名字以 `_` 结尾；纯计算、无副作用的工具函数（`formatDateStr`、`timeStrToMinutes`…）可以保持公开。
