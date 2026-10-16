@@ -1,30 +1,118 @@
-# CLAUDE.md · 技术说明
+# CLAUDE.md · 场地借用系统（Venue-Rental-System）
 
-场地借用系统的技术架构、约定与坑点。只描述**现在的设计**；改动历史见 [CHANGELOG.md](CHANGELOG.md)，业务规则见 [Docs/需求规格.md](Docs/需求规格.md)（需求编号如 `R-BK-06`），操作说明见 [README.md](README.md)。
+循人中学联课活动处的场地借用登记与公布系统：Google Apps Script 网页应用，资料存在绑定的 Google 试算表「联课处场地系统-资料库」。
 
-> ⚠️ 改代码前先读「写入约定」「权限模型」两节——违反它们的改动会重新引入已经修过的严重 bug。
+这份文件是长期规范，只写**现在的设计**和必须遵守的约定。改动历史见 [CHANGELOG.md](CHANGELOG.md)，业务规则见 [Docs/需求规格.md](Docs/需求规格.md)（需求编号如 `R-BK-06`），操作说明见 [README.md](README.md)，部署与上线检查见 [Docs/上线检查清单.md](Docs/上线检查清单.md)。2026-10-16 从 Claude 应用转到 Claude Code 时的一次性交接在 `HANDOFF.md`，处理完可以删掉。
 
-## 文件结构
+> ⚠️ 改代码前先读「绝对不能改的部分」「写入约定」「权限模型」三节。违反它们的改动，会把已经修好的严重 bug 带回来。
 
-| 文件 | 角色 |
+## 和维护者沟通
+
+- 一律用**简体中文**回复，用词浅白。维护者是 ZhiJie Chong，不是专职程序员：说明改了什么、要不要重新部署就好。
+- 业务规则以 `Docs/需求规格.md` 为准。标「✅ 已确认」的规则，改之前先问维护者。
+- 可能有别的 Claude 会话同时改这个项目：动手前先看文件的最新版本，用合并的方式改，不要整个覆盖。
+
+## 技术栈与版本
+
+| 项目 | 版本 / 说明 |
 |---|---|
-| `Code.js`（线上叫 `Code.gs`） | 后端主体：路由、权限、CRUD、冲突检测、日志、缓存、公告、电视看板资料、维护工具 |
-| `Cleanup.js`（线上叫 `Cleanup.gs`） | 定期清理：回收站/操作日志、过期借用月份表、触发器安装 |
-| `Admin.html` | 管理端 |
-| `Table.html` | 矩阵总表 + 公告栏（活动预告 + 手写公告） |
-| `Viewver.html` | 日历视图（FullCalendar）。**文件名就是 `Viewver`（历史拼写）**，`PUBLIC_PAGES` 里引用的名字要一致 |
-| `TVBoard.html` | 电视看板 |
-| `appsscript.json` | V8、时区 Asia/Singapore、网页应用 `executeAs: USER_DEPLOYING`、`access: DOMAIN`；没有进阶服务 |
-| `.clasp.json` | clasp 设定（`scriptId`），被 `.gitignore` 排除 |
-| `Docs/Google Sheets 场地借用系统开发.md` | 早期开发对话记录（约 650KB）。里面有早期/其他项目的片段，**不是**现在的设计，参考时要甄别 |
+| 执行环境 | Google Apps Script，V8 runtime（`appsscript.json`：`runtimeVersion: V8`、时区 `Asia/Singapore`、`exceptionLogging: STACKDRIVER`） |
+| 网页应用 | `executeAs: USER_DEPLOYING`（以部署者身份执行）、`access: DOMAIN`（只开放学校网域 tsunjin.edu.my） |
+| 资料库 | Google Sheets（借用记录每月一张工作表） |
+| 用到的服务 | SpreadsheetApp、HtmlService、Session、Utilities、LockService、CacheService、ScriptApp、Logger。**没有进阶服务**（People API 已移除，不要加回来） |
+| 前端 | HtmlService 模板页面，原生 JS（无构建步骤、无框架） |
+| CDN（版本固定） | Bootstrap 5.3.0；FullCalendar 6.1.8 + `@fullcalendar/core@6.1.8/locales/zh-cn.global.min.js`（v6 的 CSS 由 JS 注入，没有 `.css` 档）；marked 18.0.13（`/lib/marked.umd.js`）。全部来自 cdn.jsdelivr.net |
+| 本地工具 | clasp（版本【待确认】）、git；测试用 Node.js + Playwright（版本【待确认】） |
+| 开发机 | Windows，项目文件夹 `D:\00-Data\Documents\Github\Venue-Rental-System` |
+| 仓库 | `https://github.com/TJHS-Co-Curricular/Venue-Rental-System`（分支 `main`） |
 
-`Code.gs` 与 `Cleanup.gs` 在同一个 Apps Script 项目，共享全局作用域（`Cleanup.gs` 直接用 `Code.gs` 的常量与辅助函数）。两个文件里**不能有同名的顶层 `const`**，否则整个项目载入失败。
+## 目录结构
 
-## 部署
+```
+Code.js             后端主体（线上叫 Code.gs）：路由、权限、CRUD、冲突检测、整批编辑、日志、缓存、公告、电视看板资料、维护工具
+Cleanup.js          定期清理（线上叫 Cleanup.gs）：回收站/操作日志、过期借用月份表、触发器安装
+Admin.html          管理端（借用记录、整批编辑、特殊状态、公告编辑）
+Table.html          矩阵总表 + 右侧公告栏（自动活动预告 + 手写「其他公告」）
+Viewver.html        日历视图（FullCalendar）。文件名就是 Viewver（历史拼写），不要改
+TVBoard.html        电视看板（大讲堂 / 大礼堂 / 伯才堂本周时段表）
+appsscript.json     Apps Script 清单
+.clasp.json         clasp 设定（scriptId）。被 .gitignore 排除，新复制的项目要自己补
+.gitignore          排除 .clasp.json、Claude outputs/
+README.md           给管理员 / 部署者：设定、使用、常见问题
+CHANGELOG.md        历次改动（最新在最上面）
+CLAUDE.md           本文件
+Docs/
+  需求规格.md        业务规则与需求编号
+  上线检查清单.md    部署、更新、上线后检查、定期维护
+  Google Sheets 场地借用系统开发.md   早期开发对话记录（约 650KB）。有早期 / 其他项目的片段，不是现在的设计，参考时要甄别
+```
 
-- 改完要把代码放进 Apps Script（`clasp push` 或编辑器贴上），再「管理部署 → 编辑原部署 → 新版本」。只存档不会影响线上 `/exec` 网址。
-- `clasp push` 会删掉线上有、本地没有的文件；不要用 `clasp pull` 覆盖本地修改。
-- 网页应用以部署者身份执行：所有服务（Sheets、Cache、Lock、ScriptApp）都用拥有者的权限。`Session.getActiveUser()` 才是真正的访问者。
+- `Code.gs` 与 `Cleanup.gs` 在同一个 Apps Script 项目，共享全局作用域（`Cleanup.gs` 直接用 `Code.gs` 的常量和辅助函数）。两个文件里**不能有同名的顶层 `const`**，否则整个项目载入失败。
+- 仓库里**没有**自动化测试。旧会话写的测试脚本放在 Claude 项目「Venue-Rental-System」的 `claude/src/test/`，没有进 git，见 `HANDOFF.md`。
+
+## 编码规范与命名约定
+
+- 注释、界面文字、错误讯息一律**简体中文**。给使用者看的错误讯息以 `⛔` 开头，前端 `formatOpError()` 会原样显示。
+- **私有函数名字以 `_` 结尾**（`google.script.run` 呼叫不到）。会写表格、建工作表或泄漏资讯的辅助函数必须是私有的。
+- 新增公开函数要先归进「权限模型」表格里的其中一类：会写入的 → 第一行 `requireAdminAccess()` + 整个包在 `withScriptLock_()`；只读公开 → 不能泄漏管理资讯；维护 → `requireOwner_()`。
+- 常量全大写下划线（`MAX_RECORDS_PER_SUBMIT`、`TV_BOARD_VENUE_NAMES`）；工作表名称用常量（`TRASH_SHEET_NAME`、`SPECIAL_STATUS_SHEET_NAME`…），不要散落字面量。
+- 借用记录在程序里用中文栏名当键（`r.使用日期`、`r['时间(开始)']`），跟 `HEADERS` 一致。
+- 日期：前后端之间一律 `yyyy-MM-dd`；写进表格是 `d/M/yyyy` 文字（`formatDateStr`）；时间一律 `HH:mm` 文字。本地今天用 `localTodayIso()` / `todayIso_()`，不要用 `toISOString()` 或 `valueAsDate = new Date()`（UTC，马来西亚早上 8 点前会变成昨天）。
+- 前端：表格资料放进 `innerHTML` 前一律 `escapeHtml()`；不要把资料拼进 `onclick="..."` 字符串，改用 `addEventListener` 或 `data-*` + 事件委派；每个 `google.script.run` 都要有 `withFailureHandler`。
+- 颜色只接受 6 位色码（`HEX_COLOR_RE`）。
+- 三个礼堂名单有三份拷贝，改一份要改全部：`Code.js` 的 `TV_BOARD_VENUE_NAMES`、`Admin.html` 的 `MAJOR_HALL_NAMES`、`Table.html` 的 `PREVIEW_HALL_NAMES`。
+- 改完功能要同步更新：`CHANGELOG.md`（最上面加日期段落）、`README.md`（使用说明）、本文件（设计）、`Docs/需求规格.md`（新需求编号）、`Docs/上线检查清单.md`（新的检查项）。
+
+## 命令
+
+所有命令都在项目文件夹里执行（Windows PowerShell）：
+
+```powershell
+cd D:\00-Data\Documents\Github\Venue-Rental-System
+
+# 第一次 / 凭证过期
+clasp login                      # 要用学校账号 zjchong@tsunjin.edu.my 登入
+
+# 语法检查（改完必做）
+node --check Code.js
+node --check Cleanup.js
+# HTML 的内联 <script>：抽出来用 new Function() 检查（见下方「测试」）
+
+# 推送到 Apps Script（会让线上项目变成本地文件夹的样子）
+clasp push                       # 必要时加 --force
+clasp deployments                # 列出部署，确认原部署 ID 在列表里
+
+# 更新原本的部署（网址不变）
+clasp deploy -i AKfycbysW08R9szQRi7xvvdto4MPPV2DsxSWnvtUr4-u2hlR8Pg4_a4q5Go4Eg4dBYkPrxilkA -d "说明"
+```
+
+- 不用命令的话：Apps Script 编辑器「部署 → 管理部署 → 选原本的部署 → ✏️ 编辑 → 版本选『**新版本**』→ 部署」。版本下拉选单默认是「当前版本」，不改就等于没部署。
+- 部署后已经开着的页面要 Ctrl+F5；电视看板最晚 6 小时内会自动重新载入。
+- 线上网址：`https://script.google.com/a/macros/tsunjin.edu.my/s/AKfycbysW08R9szQRi7xvvdto4MPPV2DsxSWnvtUr4-u2hlR8Pg4_a4q5Go4Eg4dBYkPrxilkA/exec`（不加参数 = 管理端；`?page=table` 矩阵总表；`?page=view` 日历；`?page=tv` 电视看板）。
+- 「部署 → 测试部署」的 `/dev` 网址永远跑最新推上去的代码，可以用来分辨问题出在推送还是部署。
+- 常见错误：`No credentials found` → `clasp login`；`The caller does not have permission` → 换学校账号登入，并在 https://script.google.com/home/usersettings 打开 Apps Script API；`Project settings not found` → 缺 `.clasp.json`。
+- 维护函数（只有拥有者能在 Apps Script 编辑器里选函数运行）：`installMonthlyCleanupTrigger`、`uninstallMonthlyCleanupTrigger`、`clearConfigCache`、`cleanupOldBookingMonthSheets`、`fixTimeColumnFormatting`、`migrateAllSheetsToSplitTimeSchema`。
+
+## 绝对不能改的部分
+
+1. **不要用「新增部署」更新程序**：会产生新网址，旧网址和电视看板继续跑旧代码。一律编辑原部署（ID `AKfycbysW08R…`）。
+2. **不要 `clasp pull`**：会用线上版本覆盖本地还没推上去的修改。`clasp push` 会删掉线上有、本地没有的文件。
+3. **文件名不能改**：`Viewver.html`（拼法就是这样，`PUBLIC_PAGES` 引用它）；`Code` / `Cleanup` / `Admin` / `Table` / `TVBoard` 都被代码引用。
+4. **函数名 `cleanupOldTrashAndAuditLogs` 不能改**：已安装的定时触发器绑定这个名字。`onEdit` 是简易触发器，整个项目只能有一个。
+5. **工作表名称和表头文字不能改**：《场地编号》《特殊状态》《公告栏》《已删除记录(回收站)》《操作日志》、月份表名 `yyyy-MM`、`HEADERS` 的栏名。《场地编号》A 栏 = 场地编号、B 栏 = 场地名称是**按位置**读的。
+6. **删除特殊状态不能用 `deleteRow()`**：同一行 A 栏的状态定义会一起被删掉。只能 `getRange(行, 3, 1, 8).deleteCells(ROWS)`。
+7. **所有写入都用 `appendRowsAsText_()`**（先设 `@` 纯文本再写），不要用 `appendRow()` / 直接 `setValues()` 写使用者资料。
+8. **所有改动表格的操作都包在 `withScriptLock_()` 里**；锁不可重入，锁里面不要再呼叫另一个会拿锁的公开函数。
+9. **会写入的公开函数第一行必须是 `requireAdminAccess()`**；`doGet` 里除了 `PUBLIC_PAGES` 以外的任何 `page` 值都要过白名单。白名单（`readAdminDirectory_`）**不能加缓存**。
+10. **「系统时间戳」是批次识别码**：同一次提交共享同一个值；修改、整批修改都要沿用原值；新值由 `batchStamp_()` 产生（毫秒）。不要拿它做日期计算，也不要改格式。
+11. **特殊状态不能阻挡借用**（R-SS-03 ✅ 已确认）。
+12. **公告来源不能改回 Google 文档**（R-AN-03 ✅ 已确认）；不要加回 People API。
+13. **借用记录清理是永久删除**（保留今年 + 去年，R-CU-02 ✅ 已确认）。改 `CLEANUP_BOOKING_RETENTION_YEARS` 前先问维护者。
+14. 不要提交 `.clasp.json`。CDN 保持固定版本号，不要改成 `latest` 或不带版本的网址。
+
+## 执行身份
+
+网页应用以部署者身份执行：所有服务（Sheets、Cache、Lock、ScriptApp）都用拥有者的权限，`Session.getEffectiveUser()` 永远是拥有者；`Session.getActiveUser()` 才是真正的访问者。所以「现在是谁」一律看 `getActiveUser()`，「是不是拥有者本人」看两者是否相同（`isOwner_()`）。
 
 ## 资料模型
 
@@ -174,7 +262,7 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 
 ## 测试
 
-仓库里没有自动化测试。改动后至少：
+仓库里没有自动化测试（旧会话的测试脚本见 `HANDOFF.md`，拿到后建议放进 `tests/`，并把写死的 `/home/claude/...` 路径改掉）。改动后至少：
 
 - `node --check Code.js Cleanup.js`；把每个 HTML 的内联 `<script>` 抽出来用 `new Function()` 检查语法。
 - 后端：用 Node `vm` 建一个假的 Apps Script 环境（SpreadsheetApp / Session / Utilities / LockService / CacheService / ScriptApp），并模拟「非纯文本格子会自动转换」，才测得出写入格式问题。注意 `vm` 里的 `Date` 跟外面是不同 realm，`instanceof Date` 会失败。
