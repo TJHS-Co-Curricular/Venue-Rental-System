@@ -1152,6 +1152,13 @@ function formatDateStr(dateStr) {
  * 不代表真实操作者）。现在删除前会先把整行归档到回收站工作表，并且
  * 新增/修改/删除都会写一笔操作日志（含真实谷歌账号），方便事后追责或找回误删数据。
  */
+// 一次提交（一批）的「系统时间戳」：精确到毫秒。「🔗同批」和整批修改都靠它分辨哪些记录是同一次提交的，
+// 只精确到秒的话，两位管理员在同一秒提交会被当成同一批（整批修改时会连别人的记录一起改掉）。
+// 旧资料的时间戳只到秒，照样可以用。
+function batchStamp_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss.SSS");
+}
+
 function nowStamp_() {
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
 }
@@ -1353,11 +1360,14 @@ function buildMonthConflictIndex_(monthKey) {
 }
 
 // 区间重叠判定：newStart < existingEnd 且 existingStart < newEnd；excludeId 用于编辑时排除自己
+// excludeId 可以是单一 ID，也可以是一组 ID 的 Set（整批修改时排除整批旧记录）
 function findConflictInIndex_(index, venueCode, dateString, range, excludeId) {
+  const excluded =
+    excludeId instanceof Set ? excludeId : excludeId ? new Set([String(excludeId)]) : null;
   const list = index.get(String(venueCode).trim() + "|" + dateString) || [];
   for (let i = 0; i < list.length; i++) {
     const r = list[i];
-    if (excludeId && r.id === String(excludeId)) continue;
+    if (excluded && excluded.has(r.id)) continue;
     if (range.start < r.end && r.start < range.end) return r;
   }
   return null;
@@ -1433,7 +1443,7 @@ function createRecord(record) {
     });
 
     // ✅ 第二步：确认无冲突后，每个月份工作表一次整批写入
-    const timestamp = nowStamp_();
+    const timestamp = batchStamp_();
     const formattedFillDate = formatDateStr(todayIso_());
     const auditRows = [];
     let count = 0;
@@ -1577,7 +1587,7 @@ function updateRecord(id, record, monthHint) {
       填写日期: formatDateStr(todayIso_()),
       使用日期: formatDateStr(useDate),
       // 保留原本的系统时间戳，修改后仍然属于同一批（🔗同批 还能一起选到）
-      系统时间戳: oldObj["系统时间戳"] || nowStamp_(),
+      系统时间戳: oldObj["系统时间戳"] || batchStamp_(),
     };
 
     // 旧版本照样归档进回收站，改错了还能找回原本的内容
@@ -1599,6 +1609,140 @@ function updateRecord(id, record, monthHint) {
     }
     appendAuditRows_([buildAuditRow_("修改", operatorEmail, newRow, newHeaders)]);
     return { success: true };
+  });
+}
+
+// ====================================================================
+// ✏️ 整批修改：同一次提交（共享同一个「系统时间戳」）的连续借用，可以一次改内容和日期范围
+// ====================================================================
+
+// 找出所有「系统时间戳」等于 timestamp 的借用记录（扫描全部月份表；整批可能横跨很多个月，
+// 也可能超出管理端目前读取的资料范围，所以不能只靠前端手上的资料）
+function findBatchRows_(timestamp) {
+  const target = String(timestamp || "").trim();
+  if (!target) return [];
+  const rows = [];
+  SpreadsheetApp.getActiveSpreadsheet()
+    .getSheets()
+    .forEach((sheet) => {
+      if (sheet.getType() !== SpreadsheetApp.SheetType.GRID) return;
+      if (!isRecordSheetName_(sheet.getName())) return;
+      const lastRow = sheet.getLastRow();
+      if (lastRow <= 1) return;
+      const data = sheet.getRange(1, 1, lastRow, sheet.getLastColumn()).getValues();
+      const headers = data[0];
+      if (!headers || headers[0] !== "ID" || headers.indexOf("系统时间戳") === -1) return;
+      for (let i = 1; i < data.length; i++) {
+        if (!String(data[i][0] || "").trim()) continue;
+        const obj = rowToRecordObj(headers, data[i]);
+        if (obj["系统时间戳"] === target) {
+          rows.push({ sheet: sheet, rowNumber: i + 1, headers: headers, values: data[i], obj: obj });
+        }
+      }
+    });
+  return rows;
+}
+
+// 管理端「整批编辑」：读出整批记录，让前端把场地、日期范围、星期几、内容带进表单
+function readBatch(timestamp) {
+  requireAdminAccess();
+  return findBatchRows_(timestamp)
+    .map((r) => r.obj)
+    .sort((a, b) => (a["使用日期"] || "").localeCompare(b["使用日期"] || ""));
+}
+
+// 用新的设定整批取代原本那一批：
+// - expectedIds 是管理端载入时看到的那批 ID，如果这段时间里有人改过/删过这批，直接拒绝，避免覆盖别人的修改
+// - 冲突检查会排除整批旧记录（旧记录跟新设定重叠不算冲突）
+// - 先写入新记录、再删旧记录（中途失败最多是多出重复，不会把资料弄丢）；旧记录全部进回收站
+// - 新记录沿用原本的「系统时间戳」，修改后仍然是同一批
+function updateBatch(timestamp, expectedIds, record) {
+  const operatorEmail = requireAdminAccess(); // 🛡️ 写入前强制校验管理员白名单
+  const input = normalizeRecordInput_(record);
+  const venues = uniqueNonEmpty_(record.venues);
+  if (venues.length === 0) throw new Error("⛔ 请至少勾选一个场地。");
+  const range = validateTimeRange_(input.timeStart, input.timeEnd);
+  const dates = expandDates_(record.useDate, record.endDate, record.recurWeekdays);
+  assertWithinSubmitLimit_(dates.length * venues.length);
+  const filler = input.filler || getCurrentUserDisplayLabel_(operatorEmail);
+
+  return withScriptLock_(() => {
+    const oldRows = findBatchRows_(timestamp);
+    if (oldRows.length === 0) {
+      throw new Error("⛔ 找不到这一批记录（可能已经被其他管理员删除）。请重新整理列表后再操作。");
+    }
+    const oldIds = new Set(oldRows.map((r) => String(r.values[0])));
+    const expected = new Set((expectedIds || []).map(String));
+    const sameSet = expected.size === oldIds.size && Array.from(oldIds).every((id) => expected.has(id));
+    if (!sameSet) {
+      throw new Error("⛔ 这一批记录刚刚被其他人修改或删除过，请重新整理列表、重新打开整批编辑后再保存。");
+    }
+
+    const datesByMonth = new Map();
+    dates.forEach((d) => {
+      const mk = d.substring(0, 7);
+      if (!datesByMonth.has(mk)) datesByMonth.set(mk, []);
+      datesByMonth.get(mk).push(d);
+    });
+
+    // 🚧 冲突检查（排除整批旧记录）
+    datesByMonth.forEach((monthDates, monthKey) => {
+      const index = buildMonthConflictIndex_(monthKey);
+      monthDates.forEach((dateString) => {
+        venues.forEach((venueCode) => {
+          const conflict = findConflictInIndex_(index, venueCode, dateString, range, oldIds);
+          if (conflict) throw new Error(conflictMessage_(venueCode, dateString, conflict, true));
+        });
+      });
+    });
+
+    // ✅ 写入新记录（沿用原本的系统时间戳）
+    const formattedFillDate = formatDateStr(todayIso_());
+    const auditRows = [];
+    let created = 0;
+    datesByMonth.forEach((monthDates, monthKey) => {
+      const sheet = getSheetForDate_(monthKey + "-01");
+      const sheetHeaders = getSheetHeaders_(sheet);
+      const rows = [];
+      monthDates.forEach((dateString) => {
+        venues.forEach((venueCode) => {
+          const row = recordToSheetRow_(sheetHeaders, {
+            ID: "ID_" + Utilities.getUuid(),
+            场地: venueCode,
+            活动: input.event,
+            单位: input.unit,
+            "时间(开始)": input.timeStart,
+            "时间(结束)": input.timeEnd,
+            填写人: filler,
+            填写日期: formattedFillDate,
+            使用日期: formatDateStr(dateString),
+            系统时间戳: String(timestamp),
+          });
+          rows.push(row);
+          auditRows.push(buildAuditRow_("整批修改", operatorEmail, row, sheetHeaders));
+        });
+      });
+      appendRowsAsText_(sheet, rows);
+      created += rows.length;
+    });
+
+    // 🗑️ 旧记录归档进回收站后删除（新记录都写在各表最下面，不影响旧记录的行号）
+    const trashRows = oldRows.map((r) => buildTrashRow_(r.headers, r.values, operatorEmail));
+    oldRows.forEach((r) => auditRows.push(buildAuditRow_("整批修改(旧)", operatorEmail, r.values, r.headers)));
+    const bySheet = new Map();
+    oldRows.forEach((r) => {
+      const name = r.sheet.getName();
+      if (!bySheet.has(name)) bySheet.set(name, { sheet: r.sheet, rows: [] });
+      bySheet.get(name).rows.push(r.rowNumber);
+    });
+    bySheet.forEach(({ sheet, rows }) => {
+      rows.sort((a, b) => b - a);
+      ensureSpareRow_(sheet);
+      rows.forEach((rowNumber) => sheet.deleteRow(rowNumber));
+    });
+    appendRowsAsText_(getTrashSheet_(), trashRows);
+    appendAuditRows_(auditRows);
+    return { success: true, removed: oldRows.length, created: created };
   });
 }
 

@@ -78,6 +78,19 @@
       border-radius: 3px;
     }
 
+    /* 列表操作按钮排成 2×2，避免四个按钮把「活动」栏挤成一字一行 */
+    .row-actions {
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 4px;
+      width: max-content;
+    }
+
+    .row-actions .btn {
+      padding: 2px 8px;
+      white-space: nowrap;
+    }
+
     .chk-cell {
       width: 38px;
       text-align: center;
@@ -193,6 +206,8 @@
           <div class="card-body">
             <form id="bookingForm">
               <input type="hidden" id="recordId">
+              <!-- ✏️ 整批修改模式的说明（原本几条、日期范围、注意事项），平常隐藏 -->
+              <div class="alert alert-warning small py-2 d-none" id="batchEditNote" role="status"></div>
 
               <div class="mb-3">
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -361,7 +376,7 @@
                         onclick="toggleSelectAll(this)"></th>
                     <th>使用日期</th>
                     <th>场地</th>
-                    <th>活动</th>
+                    <th style="min-width: 6em;">活动</th>
                     <th>单位</th>
                     <th>时间</th>
                     <th>填写人</th>
@@ -431,7 +446,7 @@
           <div
             class="card-header bg-info bg-opacity-25 d-flex justify-content-between align-items-center py-2 flex-wrap gap-2">
             <div class="d-flex align-items-center">
-              <span class="fw-bold">📢 矩阵总表公告栏</span>
+              <span class="fw-bold">📢 矩阵总表公告栏 · 其他公告</span>
               <span class="text-secondary ms-2" id="announcementEditorUpdatedNote" style="font-size: 12px;"></span>
             </div>
             <div class="d-flex align-items-center gap-2">
@@ -442,6 +457,10 @@
             </div>
           </div>
           <div class="card-body">
+            <div class="alert alert-light border small py-2 mb-3">
+              🎭 公告栏上半部的「活动预告」是系统按大讲堂 / 大礼堂 / 伯才堂的借用记录<b>自动生成</b>的，不用在这里写。
+              这里写的内容会显示在活动预告<b>下方</b>（标题「📝 其他公告」）；留空就只显示活动预告。
+            </div>
             <div class="row g-3">
               <div class="col-lg-6">
                 <label class="form-label small text-secondary mb-1">Markdown 内容（支持 <code>#</code>~<code>####</code>
@@ -513,6 +532,9 @@
       return Object.prototype.hasOwnProperty.call(LETTER_BLOCK_LABELS, ch) ? ch : 'OTHER';
     }
     let isEditMode = false; // 🛡️ 编辑模式标记：编辑时场地只能单选，避免多选后其余场地被后端悄悄丢弃
+    // ✏️ 整批修改模式：{ timestamp, ids }。用同一个「系统时间戳」认出同一次提交的整批记录，
+    // 保存时由后端整批取代（内容、场地、日期范围、星期几都能改）
+    let batchEdit = null;
     let currentPage = 1; // 🆕 分页：借用记录列表当前显示第几页
     let pageSize = 8; // 🆕 分页：每页显示笔数，使用者可在 8 / 16 / 32 之间选择（依屏幕大小自行调整）
     // 🛡️ 勾选状态改用独立集合记录，不再单纯依赖 DOM 上打勾的 checkbox：
@@ -735,7 +757,7 @@
       const markdown = document.getElementById('announcementMarkdownInput').value;
       document.getElementById('announcementPreviewBox').innerHTML = (markdown && markdown.trim())
         ? marked.parse(markdown)
-        : '<span class="text-secondary">（内容是空的，矩阵总表公告栏会显示"尚未设置"）</span>';
+        : '<span class="text-secondary">（内容是空的，矩阵总表公告栏只会显示活动预告）</span>';
     }
 
     function saveAnnouncementEditor() {
@@ -1262,9 +1284,12 @@
         <td>${escapeHtml(item.填写人) || '无'}</td>
         <td class="text-primary">${escapeHtml(fillD)}</td>
         <td>
-          <button type="button" class="btn btn-sm btn-warning me-1 act-edit">编辑</button>
-          <button type="button" class="btn btn-sm btn-outline-secondary me-1 act-batch" title="勾选同一次提交的所有记录，方便整批删除/重建">🔗同批</button>
-          <button type="button" class="btn btn-sm btn-danger act-delete">删除</button>
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm btn-warning act-edit">编辑</button>
+            <button type="button" class="btn btn-sm btn-outline-warning act-batch-edit" title="一次修改同一次提交的整批记录：内容、场地、日期范围、星期几都可以改">整批编辑</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary act-batch" title="勾选同一次提交的所有记录，方便整批删除/重建">🔗同批</button>
+            <button type="button" class="btn btn-sm btn-danger act-delete">删除</button>
+          </div>
         </td>
       `;
         // 🛡️ 用 addEventListener 绑定，不把记录 ID / 时间戳拼进 onclick 字符串
@@ -1272,6 +1297,7 @@
         cb.addEventListener('click', () => handleRowCheckboxClick(cb));
         trElement.querySelector('.act-edit').addEventListener('click', () => editRow(item.ID));
         trElement.querySelector('.act-batch').addEventListener('click', () => selectSameBatch(item.系统时间戳));
+        trElement.querySelector('.act-batch-edit').addEventListener('click', () => startBatchEdit(item.系统时间戳));
         trElement.querySelector('.act-delete').addEventListener('click', () => deleteRow(item.ID));
         tbody.appendChild(trElement);
       });
@@ -1407,7 +1433,8 @@
     function afterRecordsDeleted(ids, res) {
       const editingId = document.getElementById('recordId').value;
       const deletedCount = res && res.count != null ? res.count : ids.length;
-      if (editingId && ids.indexOf(editingId) > -1) {
+      const touchesBatchEdit = batchEdit && ids.some(id => batchEdit.ids.indexOf(id) > -1);
+      if ((editingId && ids.indexOf(editingId) > -1) || touchesBatchEdit) {
         resetForm();
         showToast(`🗑️ 已删除 ${deletedCount} 条记录（正在编辑的那一笔也被删除，已退出编辑模式）`, 'warn');
       } else {
@@ -1491,7 +1518,16 @@
           alert("⚠️ 所选日期范围内找不到任何符合条件的日期，请检查日期或星期几设置。");
           return;
         }
-        if (!confirmSubmitSize(days * checkedVenues.length, '借用记录')) return;
+        const total = days * checkedVenues.length;
+        if (batchEdit) {
+          if (total > MAX_RECORDS_PER_SUBMIT) {
+            alert(`⚠️ 这次会产生 ${total} 笔借用记录，超过单次上限 ${MAX_RECORDS_PER_SUBMIT} 笔。\n请检查「结束日期」有没有打错，或缩小范围。`);
+            return;
+          }
+          if (!confirm(`确定要整批修改吗？\n\n原本这一批的 ${batchEdit.ids.length} 条记录会被取代（旧记录存进回收站），\n依现在的设定重新产生 ${total} 条。`)) return;
+        } else if (!confirmSubmitSize(total, '借用记录')) {
+          return;
+        }
       }
 
       const record = {
@@ -1506,8 +1542,26 @@
       };
       if (recurList) record.recurWeekdays = recurList; // 只在这些星期几生成记录，例如 [6] = 只在每个周六
 
-      if (!beginWrite(id ? "正在保存修改..." : "正在提交中...")) return;
-      if (id) {
+      if (!beginWrite(id ? "正在保存修改..." : (batchEdit ? "正在整批修改..." : "正在提交中..."))) return;
+      if (batchEdit) {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            endWrite();
+            resetForm();
+            showToast(`✅ 整批已更新：原本 ${res.removed} 条 → 现在 ${res.created} 条`);
+            loadData();
+          })
+          .withFailureHandler(function (err) {
+            endWrite();
+            const msg = formatOpError(err);
+            alert(msg);
+            if (msg.indexOf('刚刚被其他人') > -1 || msg.indexOf('找不到这一批') > -1) {
+              resetForm();
+              loadData();
+            }
+          })
+          .updateBatch(batchEdit.timestamp, batchEdit.ids, record);
+      } else if (id) {
         const original = rawData.find(x => x.ID === id);
         google.script.run
           .withSuccessHandler(function () {
@@ -1570,6 +1624,7 @@
     function editRow(id) {
       const item = rawData.find(x => x.ID === id);
       if (!item) return;
+      exitBatchEditMode();
       isEditMode = true; // 🛡️ 进入编辑模式：场地锁定为单选
       document.getElementById('selectAllVenues').checked = false;
       document.getElementById('selectAllVenues').disabled = true;
@@ -1612,6 +1667,122 @@
       renderTable(rawData);
     }
 
+    // ✏️ 整批编辑：先向后端读出整批（整批可能超出目前列表的资料范围，所以不能只看 rawData）
+    function startBatchEdit(timestamp) {
+      if (!timestamp) {
+        alert('该记录没有系统时间戳，无法识别所属批次。');
+        return;
+      }
+      if (writeInFlight) return;
+      showLoading(true, "正在读取这一批记录...");
+      google.script.run
+        .withSuccessHandler(function (list) {
+          showLoading(false);
+          if (!list || list.length === 0) {
+            alert('找不到这一批记录，可能已经被删除。');
+            loadData();
+            return;
+          }
+          fillBatchEditForm(list, timestamp);
+        })
+        .withFailureHandler(function (err) {
+          showLoading(false);
+          alert(formatOpError(err));
+        })
+        .readBatch(timestamp);
+    }
+
+    function isoToLocalDate(iso) {
+      const p = iso.split('-').map(Number);
+      return new Date(p[0], p[1] - 1, p[2]);
+    }
+
+    // 从这一批的实际日期，推回表单要填的「开始日期 / 结束日期 / 按星期重复」
+    // irregular = 日期不是"每天"也不是"固定星期几"（例如中间有几天被单独删掉），保存后会照表单设定重新产生
+    function inferBatchDatePattern(dates) {
+      const first = dates[0];
+      const last = dates[dates.length - 1];
+      const dateSet = new Set(dates);
+      const weekdays = new Set(dates.map(d => isoToLocalDate(d).getDay()));
+      let allDays = 0;
+      let matchingWeekdayDays = 0;
+      for (const d = isoToLocalDate(first); d <= isoToLocalDate(last); d.setDate(d.getDate() + 1)) {
+        allDays++;
+        if (weekdays.has(d.getDay())) matchingWeekdayDays++;
+      }
+      if (dates.length === allDays) return { first, last, recur: null, irregular: false };
+      return { first, last, recur: weekdays, irregular: matchingWeekdayDays !== dateSet.size };
+    }
+
+    function fillBatchEditForm(list, timestamp) {
+      resetForm();
+      batchEdit = { timestamp: timestamp, ids: list.map(r => r.ID) };
+
+      const dates = Array.from(new Set(list.map(r => r.使用日期).filter(Boolean))).sort();
+      const pattern = inferBatchDatePattern(dates);
+      const first = list[0];
+
+      // 场地：整批用到的所有场地（可多选）
+      list.forEach(r => {
+        const raw = String(r.场地 || '').trim();
+        const matched = venueOptions.find(v => v.code === raw || v.name === raw);
+        globalSelectedVenues.add(matched ? matched.code : raw);
+      });
+      renderVenueGridTiles();
+
+      document.getElementById('event').value = first.活动 || '';
+      document.getElementById('unit').value = first.单位 || '';
+      const t = (first['时间(开始)'] || first['时间(结束)']) ? {
+        start: first['时间(开始)'] || '',
+        end: first['时间(结束)'] || ''
+      } : parseTimeRangeStr(first.时间);
+      document.getElementById('timeStart').value = t.start;
+      document.getElementById('timeEnd').value = t.end;
+      document.getElementById('filler').value = first.填写人 || '';
+      document.getElementById('useDate').value = pattern.first;
+      document.getElementById('endDate').value = pattern.last !== pattern.first ? pattern.last : '';
+      if (pattern.recur) {
+        document.getElementById('recurModeCheckbox').checked = true;
+        document.getElementById('recurWeekdayGroup').classList.remove('d-none');
+        recurSelectedWeekdays = new Set(pattern.recur);
+        renderRecurWeekdayButtons();
+      }
+
+      // 整批里如果有几笔被单独修改过（内容不一样），保存后会统一成表单上的内容
+      const sig = r => [r.活动, r.单位, r['时间(开始)'], r['时间(结束)']].join('|');
+      const mixed = list.some(r => sig(r) !== sig(first));
+      const venueNames = Array.from(globalSelectedVenues).join('、');
+      const notes = [
+        `<b>整批修改</b>：「${escapeHtml(first.活动 || '')}」原本 <b>${list.length}</b> 条，` +
+        `${escapeHtml(pattern.first)}${pattern.last !== pattern.first ? ' 至 ' + escapeHtml(pattern.last) : ''}，场地 ${escapeHtml(venueNames)}。`,
+        '可以修改内容、场地、日期范围、星期几。保存后会依下面的设定<b>整批重新产生</b>，旧记录存进回收站。'
+      ];
+      // 不规则：日期不是每天/固定星期几，或者某些"日期 × 场地"组合被单独删掉过
+      const irregular = pattern.irregular || list.length !== dates.length * globalSelectedVenues.size;
+      if (irregular) notes.push('⚠️ 这一批不完整（有些日期或场地被单独删除过），保存后会照下面的设定整批重新产生，被删掉的那几笔会补回来，请先确认。');
+      if (mixed) notes.push('⚠️ 这一批里有几笔的内容跟第一笔不一样（被单独修改过），保存后会统一成下面的内容。');
+      const noteEl = document.getElementById('batchEditNote');
+      noteEl.innerHTML = notes.join('<br>');
+      noteEl.classList.remove('d-none');
+
+      document.getElementById('formTitle').innerText = `✏️ 整批修改借用记录（原本 ${list.length} 条）`;
+      document.getElementById('submitBtn').className = "btn btn-warning";
+      document.getElementById('submitBtn').innerText = "保存整批修改";
+      document.getElementById('cancelBtn').style.display = "block";
+      document.getElementById('dateLabel').innerText = "场地使用日期 (开始)";
+      document.getElementById('venueLabel').innerText = "借用场地 (整批修改，可多选)";
+      document.getElementById('formTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function exitBatchEditMode() {
+      batchEdit = null;
+      const noteEl = document.getElementById('batchEditNote');
+      if (noteEl) {
+        noteEl.classList.add('d-none');
+        noteEl.innerHTML = '';
+      }
+    }
+
     function deleteRow(id) {
       if (!confirm('确定要删除这条场地借用记录吗？')) return;
       if (!beginWrite("正在删除...")) return;
@@ -1629,6 +1800,7 @@
     }
 
     function resetForm() {
+      exitBatchEditMode();
       isEditMode = false; // 🛡️ 退出编辑模式：场地恢复可多选
       document.getElementById('selectAllVenues').disabled = false;
       document.getElementById('bookingForm').reset();

@@ -117,10 +117,9 @@
             flex: 0 0 70%;
         }
 
-        /* 📢 公告栏：内容来自《公告栏》工作表 A2 格的 Markdown 文本（见 Code.gs 的
-           getAnnouncementContent()），前端用 marked.js 转成 HTML 再显示。管理员在 Admin.html
-           最下方的编辑区（或直接编辑 A2 格）更新内容后，这里会在页面重新整理/定期刷新时
-           自动跟着更新，不需要碰任何代码 */
+        /* 📢 公告栏：上半部是自动生成的活动预告（renderEventPreview），下半部是手写公告——
+           内容来自《公告栏》工作表 A2 格的 Markdown 文本（见 Code.gs 的 getAnnouncementContent()），
+           前端用 marked.js 转成 HTML 再显示；A2 是空的就不显示这一块 */
         .announcement-panel {
             flex: 1 1 0;
             min-width: 260px;
@@ -231,6 +230,164 @@
 
         .announcement-body .ann-error {
             color: #c0392b;
+        }
+
+        /* 🎭 活动预告：公告栏上半部，根据所选月份的借用记录自动生成（只看大讲堂/大礼堂/伯才堂），
+           按日期分组。看本月时，已经过去的日子变淡、今天标「今天」。
+           手写公告（《公告栏》A2 的 Markdown）有内容才显示在下方 */
+        .announcement-panel {
+            position: relative; /* 让 .pv-day 的 offsetTop 以公告栏为基准，自动卷到今天时用 */
+        }
+
+        /* 公告栏卷动时，"📢 公告栏"标题固定在最上面（往下卷到今天也看得到是哪一块） */
+        .announcement-panel .announcement-header {
+            position: sticky;
+            top: -16px;
+            z-index: 2;
+            background: var(--panel-bg);
+            margin: -16px -20px 12px;
+            padding: 16px 20px 10px;
+        }
+
+        .pv-section-title {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--accent-dark);
+            margin: 2px 0 10px;
+        }
+
+        .pv-section-title .sub {
+            font-size: 11.5px;
+            font-weight: 500;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .pv-day {
+            margin-bottom: 12px;
+        }
+
+        .pv-day.past {
+            opacity: 0.45;
+        }
+
+        .pv-date {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            font-size: 13.5px;
+            font-weight: 700;
+            color: var(--ink);
+            padding: 3px 0;
+            border-bottom: 1px dashed var(--grid-line);
+            margin-bottom: 6px;
+        }
+
+        .pv-tag {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 7px;
+            border-radius: 999px;
+            line-height: 1.5;
+        }
+
+        .pv-tag.today {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .pv-tag.holiday {
+            background: var(--holiday-tint);
+            color: #854d0e;
+            border: 1px solid #eab308;
+        }
+
+        .pv-day.today .pv-date {
+            color: var(--accent-dark);
+        }
+
+        .pv-item {
+            display: block;
+            border: 1px solid var(--grid-line);
+            border-left: 5px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 6px 10px;
+            margin-bottom: 6px;
+            background: #fff;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .pv-item:hover {
+            background: var(--header-bg);
+        }
+
+        .pv-line1 {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            font-size: 12.5px;
+        }
+
+        .pv-hall {
+            font-weight: 700;
+            color: var(--accent-dark);
+            white-space: nowrap;
+        }
+
+        .pv-time {
+            color: #c0392b;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .pv-event {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--ink);
+            line-height: 1.45;
+            word-break: break-word;
+        }
+
+        .pv-unit {
+            font-size: 12px;
+            color: var(--muted);
+            word-break: break-word;
+        }
+
+        .pv-item.pv-status {
+            background: #fffbeb;
+            font-size: 13px;
+            font-weight: 600;
+            color: #92400e;
+        }
+
+        .pv-empty {
+            color: var(--muted);
+            font-size: 13px;
+            text-align: center;
+            padding: 18px 8px;
+        }
+
+        .pv-note {
+            font-size: 12px;
+            color: var(--muted);
+            background: var(--header-bg);
+            border-radius: 6px;
+            padding: 5px 8px;
+            margin-bottom: 10px;
+        }
+
+        .manual-announcement {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 2px solid var(--grid-line);
         }
 
         /* 细一点、圆角的滚动条（仅 WebKit 系浏览器生效，其他浏览器会退回默认样式，不影响功能） */
@@ -503,9 +660,21 @@
             <div class="announcement-panel" id="announcementPanel">
                 <div class="announcement-header">
                     <span class="announcement-title">📢 公告栏</span>
-                    <span class="announcement-updated" id="announcementUpdated"></span>
                 </div>
-                <div class="announcement-body" id="announcementBody">载入中...</div>
+                <!-- 🎭 活动预告：自动生成，不用手动维护 -->
+                <div class="pv-section-title">
+                    <span id="eventPreviewTitle">🎭 活动预告</span>
+                    <span class="sub">大讲堂 · 大礼堂 · 伯才堂</span>
+                </div>
+                <div id="eventPreviewBody"><div class="pv-empty">载入中...</div></div>
+                <!-- 📝 手写公告（管理端编辑）：有内容才显示 -->
+                <div class="manual-announcement d-none" id="manualAnnouncementSection">
+                    <div class="pv-section-title">
+                        <span>📝 其他公告</span>
+                        <span class="sub" id="announcementUpdated"></span>
+                    </div>
+                    <div class="announcement-body" id="announcementBody"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -645,47 +814,232 @@
         }
 
         // 📢 读取右侧公告栏内容（来源：Code.gs 的 getAnnouncementContent()，读取《公告栏》工作表 A2 格的 Markdown）
+        // 手写公告现在是公告栏的下半部（上半部是自动的活动预告），没内容就整块隐藏
         function loadAnnouncement() {
             google.script.run
                 .withSuccessHandler(renderAnnouncement)
                 .withFailureHandler(function (err) {
+                    // 读取失败：如果之前已经显示过公告，就保留原本内容，不要用错误讯息盖掉
+                    const section = document.getElementById('manualAnnouncementSection');
+                    if (!section.classList.contains('d-none')) return;
                     document.getElementById('announcementBody').innerHTML =
-                        '<div class="ann-error">⚠️ 公告栏读取失败：' + escapeHtml(err && err.message ? err.message : String(
+                        '<div class="ann-error">⚠️ 公告读取失败：' + escapeHtml(err && err.message ? err.message : String(
                             err)) + '</div>';
                     document.getElementById('announcementUpdated').textContent = '';
+                    section.classList.remove('d-none');
                 })
                 .getAnnouncementContent();
         }
 
         function renderAnnouncement(data) {
+            const section = document.getElementById('manualAnnouncementSection');
             const bodyEl = document.getElementById('announcementBody');
             const updatedEl = document.getElementById('announcementUpdated');
 
-            if (!data || !data.configured) {
-                bodyEl.innerHTML =
-                    '<div class="ann-empty">尚未设置公告内容<br>（在《公告栏》工作表的 A2 格贴上 Markdown 内容即可启用）</div>';
-                updatedEl.textContent = '';
-                return;
-            }
-            if (data.error) {
+            if (data && data.configured && data.error) {
                 bodyEl.innerHTML = '<div class="ann-error">⚠️ 读取公告内容失败：' + escapeHtml(data.error) + '</div>';
                 updatedEl.textContent = '';
+                section.classList.remove('d-none');
+                return;
+            }
+            // 没设置、或内容是空的 → 只显示活动预告
+            if (!data || !data.configured || !data.markdown || !data.markdown.trim()) {
+                bodyEl.innerHTML = '';
+                updatedEl.textContent = '';
+                section.classList.add('d-none');
                 return;
             }
             // ⚠️ data.markdown 是管理员写的 Markdown 原文，这里用 marked.js 转成 HTML 再显示——
             // marked 预设允许内文夹带原生 HTML 标签直接通过，所以效果上跟"信任的 HTML"是同一回事，
             // 只是这张工作表本来就只有信任的管理员能编辑，风险等级没变
-            bodyEl.innerHTML = (data.markdown && data.markdown.trim()) ?
-                marked.parse(data.markdown) :
-                '<div class="ann-empty">（公告内容目前是空的）</div>';
-            updatedEl.textContent = data.updated ? ('公告更新于 ' + data.updated) : '';
+            bodyEl.innerHTML = marked.parse(data.markdown);
+            updatedEl.textContent = data.updated ? ('更新于 ' + data.updated) : '';
+            section.classList.remove('d-none');
         }
+
+        // 🎭 活动预告只看这三个礼堂。场地编号或名称"包含"其中一个名字就算（跟 Code.gs 的
+        // TV_BOARD_VENUE_NAMES、Admin.html 的 MAJOR_HALL_NAMES 是同一份名单，改一边要改另外两边）
+        const PREVIEW_HALL_NAMES = ['大讲堂', '大礼堂', '伯才堂'];
+        let previewScrolledMonth = ''; // 每个月只自动卷到"今天"一次，之后的 5 分钟刷新不打扰正在看的人
+
+        // 把记录里的场地字段解析成 {code, label, order}；不是三个礼堂之一就回传 null。
+        // code = 矩阵用的场地编号（点开明细要用）；label = 显示用的文字（包含礼堂名字的那个：编号或名称）
+        function resolvePreviewHall(rawVenue, rawName) {
+            const raw = String(rawVenue || '').trim();
+            const venue = staticVenues.find(v => raw === v.code || raw === v.name ||
+                raw === (v.code + ' ' + (v.name || '')));
+            const code = venue ? venue.code : raw;
+            const candidates = venue ? [venue.code, venue.name] : [raw, rawName];
+            for (let i = 0; i < PREVIEW_HALL_NAMES.length; i++) {
+                const hall = PREVIEW_HALL_NAMES[i];
+                const hit = candidates.find(s => s && String(s).indexOf(hall) > -1);
+                if (hit) return {
+                    code: code,
+                    label: String(hit).trim(),
+                    order: i
+                };
+            }
+            return null;
+        }
+
+        function renderEventPreview() {
+            const selectedMonth = document.getElementById('monthPicker').value;
+            const bodyEl = document.getElementById('eventPreviewBody');
+            if (!selectedMonth) return;
+            const [year, month] = selectedMonth.split('-');
+            const monthNum = parseInt(month, 10);
+            document.getElementById('eventPreviewTitle').textContent = '🎭 ' + monthNum + '月活动预告';
+
+            const now = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const holidayDays = getHolidayDaysForMonth(monthNum, daysInMonth);
+
+            // 同一类活动（同礼堂 + 同活动名称 + 同单位；特殊状态 = 同礼堂 + 同状态）合并成一项，
+            // 日期写成范围（01/01/2027-16/01/2027），不再每天重复列一次
+            const groups = new Map();
+            const addToGroup = (key, base, date, time) => {
+                if (!groups.has(key)) groups.set(key, Object.assign(base, {
+                    dates: new Set(),
+                    times: new Set()
+                }));
+                const g = groups.get(key);
+                g.dates.add(date);
+                if (time) g.times.add(time);
+            };
+            bookingRecords.forEach(r => {
+                const date = r.使用日期 || '';
+                if (date.slice(0, 7) !== selectedMonth) return;
+                const hall = resolvePreviewHall(r.场地);
+                if (!hall) return;
+                const unit = String(r.单位 || '').trim();
+                const activity = String(r.活动 || '').trim();
+                const time = r['时间(开始)'] && r['时间(结束)'] ? `${r['时间(开始)']}–${r['时间(结束)']}` : String(r.时间 || '');
+                addToGroup(['E', hall.code, activity, unit].join('\u0001'), {
+                    kind: 'event',
+                    hall: hall,
+                    activity: activity,
+                    unit: unit
+                }, date, time);
+            });
+            specialStatusList.forEach(s => {
+                if (!s.date || s.date.slice(0, 7) !== selectedMonth) return;
+                const hall = resolvePreviewHall(s.venueCode, s.venueName);
+                if (!hall) return;
+                addToGroup(['S', hall.code, s.status].join('\u0001'), {
+                    kind: 'status',
+                    hall: hall,
+                    status: s.status,
+                    color: s.color
+                }, s.date, '');
+            });
+
+            if (groups.size === 0) {
+                bodyEl.innerHTML = '<div class="pv-empty">这个月三个礼堂暂时没有活动</div>';
+                return;
+            }
+
+            const fmtDate = iso => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+            const dayOf = iso => parseInt(iso.slice(8, 10), 10);
+            // 日期清单 → 连续的段落 → "01/10/2026-05/10/2026、12/10/2026"；段落太多（例如每周一次）就写首尾 + 共几天
+            const formatDateRanges = dates => {
+                const runs = [];
+                dates.forEach(d => {
+                    const last = runs[runs.length - 1];
+                    if (last && dayOf(d) === dayOf(last.end) + 1) last.end = d;
+                    else runs.push({ start: d, end: d });
+                });
+                const fmtRun = run => run.start === run.end ? fmtDate(run.start) : `${fmtDate(run.start)}-${fmtDate(run.end)}`;
+                if (runs.length > 3) return `${fmtDate(dates[0])}-${fmtDate(dates[dates.length - 1])}（共 ${dates.length} 天）`;
+                return runs.map(fmtRun).join('、');
+            };
+
+            // 日期范围相同的项目放在同一个标题下
+            const sections = new Map();
+            groups.forEach(g => {
+                g.dateList = Array.from(g.dates).sort();
+                g.first = g.dateList[0];
+                g.last = g.dateList[g.dateList.length - 1];
+                g.label = formatDateRanges(g.dateList);
+                if (!sections.has(g.label)) sections.set(g.label, {
+                    label: g.label,
+                    first: g.first,
+                    last: g.last,
+                    dateList: g.dateList,
+                    items: []
+                });
+                sections.get(g.label).items.push(g);
+            });
+            const sectionList = Array.from(sections.values())
+                .sort((a, b) => a.first.localeCompare(b.first) || a.last.localeCompare(b.last));
+
+            const firstTimeOf = g => Array.from(g.times).sort()[0] || '';
+            let html = '';
+            if (selectedMonth === todayStr.slice(0, 7) && sectionList.every(sec => sec.last < todayStr)) {
+                html += '<div class="pv-note">本月接下来没有活动了，下面是这个月已经办过的</div>';
+            }
+            sectionList.forEach(sec => {
+                const isPast = sec.last < todayStr;
+                const isOngoing = sec.first <= todayStr && todayStr <= sec.last;
+                const isToday = sec.dateList.indexOf(todayStr) > -1;
+                // 点开明细要一个具体日期：今天有就用今天，否则用接下来的第一天，再不然用第一天
+                const clickDate = isToday ? todayStr : (sec.dateList.find(d => d >= todayStr) || sec.first);
+                let dayHtml = `<div class="pv-date">${escapeHtml(sec.label)}`;
+                if (sec.dateList.length === 1) {
+                    dayHtml += `（${weekdaysMap[new Date(year, monthNum - 1, dayOf(sec.first)).getDay()]}）`;
+                }
+                if (isToday) dayHtml += '<span class="pv-tag today">今天</span>';
+                else if (isOngoing) dayHtml += '<span class="pv-tag today">进行中</span>';
+                if (sec.dateList.every(d => holidayDays.has(dayOf(d)))) dayHtml += '<span class="pv-tag holiday">假期</span>';
+                dayHtml += '</div>';
+
+                const statuses = sec.items.filter(g => g.kind === 'status').sort((a, b) => a.hall.order - b.hall.order);
+                const events = sec.items.filter(g => g.kind === 'event')
+                    .sort((a, b) => firstTimeOf(a).localeCompare(firstTimeOf(b)) || a.hall.order - b.hall.order);
+                statuses.forEach(g => {
+                    const c = HEX_COLOR_RE.test(g.color) ? g.color : '#f59e0b';
+                    dayHtml += `<div class="pv-item pv-status" style="border-left-color:${c}" data-venue="${escapeHtml(g.hall.code)}" data-date="${clickDate}">🚧 ${escapeHtml(g.hall.label)} · ${escapeHtml(g.status)}</div>`;
+                });
+                events.forEach(g => {
+                    const c = unitColorMap.get(g.unit);
+                    const border = (c && HEX_COLOR_RE.test(c)) ? ` style="border-left-color:${c}"` : '';
+                    const time = Array.from(g.times).sort().join('、');
+                    dayHtml += `<div class="pv-item"${border} data-venue="${escapeHtml(g.hall.code)}" data-date="${clickDate}">` +
+                        `<div class="pv-line1"><span class="pv-hall">${escapeHtml(g.hall.label)}</span><span class="pv-time">${escapeHtml(time)}</span></div>` +
+                        `<div class="pv-event">${escapeHtml(g.activity) || '（未填活动名称）'}</div>` +
+                        (g.unit ? `<div class="pv-unit">${escapeHtml(g.unit)}</div>` : '') +
+                        '</div>';
+                });
+                html += `<div class="pv-day${isPast ? ' past' : ''}${isOngoing ? ' today' : ''}" data-date="${clickDate}">${dayHtml}</div>`;
+            });
+            bodyEl.innerHTML = html;
+
+            // 看本月：第一次显示时把公告栏卷到"今天或之后的第一天"，前面过去的活动往上卷就看得到
+            if (previewScrolledMonth !== selectedMonth) {
+                previewScrolledMonth = selectedMonth;
+                const panel = document.getElementById('announcementPanel');
+                const firstUpcoming = selectedMonth === todayStr.slice(0, 7) ?
+                    bodyEl.querySelector('.pv-day:not(.past)') : null;
+                const hasPast = !!bodyEl.querySelector('.pv-day.past');
+                const headerH = panel.querySelector('.announcement-header').offsetHeight;
+                panel.scrollTop = (firstUpcoming && hasPast) ? Math.max(0, firstUpcoming.offsetTop - headerH - 8) : 0;
+            }
+        }
+
+        // 点预告里的活动 → 跟点矩阵格子一样，打开那个场地当天的明细
+        document.getElementById('eventPreviewBody').addEventListener('click', function (e) {
+            const item = e.target.closest('.pv-item');
+            if (!item || !item.dataset.venue) return;
+            showBookingModal(item.dataset.venue, item.dataset.date);
+        });
 
         function checkAndRender(counter) {
             if (counter === TOTAL_LOADS) {
                 initialRenderDone = true;
                 document.getElementById('loadingOverlay').style.display = 'none';
                 if (initLoadError) {
+                    renderEventPreview();
                     document.getElementById('tbodyRows').innerHTML =
                         '<tr><td class="text-danger fw-bold py-4" style="white-space:normal;">⚠️ ' +
                         escapeHtml(initLoadError) + '<br>请稍后重新整理网页再试一次。</td></tr>';
@@ -898,6 +1252,7 @@
 
         function renderMatrix() {
             const selectedMonth = document.getElementById('monthPicker').value;
+            renderEventPreview(); // 🎭 公告栏的活动预告跟矩阵用同一份当月资料，一起更新
             if (!selectedMonth || staticVenues.length === 0) return;
 
             recordIndex = buildRecordIndex(); // 每次渲染前重建一次索引（O(记录数)），比每格都扫一遍全部记录快得多

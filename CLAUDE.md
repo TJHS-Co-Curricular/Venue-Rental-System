@@ -11,7 +11,7 @@
 | `Code.js`（线上叫 `Code.gs`） | 后端主体：路由、权限、CRUD、冲突检测、日志、缓存、公告、电视看板资料、维护工具 |
 | `Cleanup.js`（线上叫 `Cleanup.gs`） | 定期清理：回收站/操作日志、过期借用月份表、触发器安装 |
 | `Admin.html` | 管理端 |
-| `Table.html` | 矩阵总表 + 公告栏 |
+| `Table.html` | 矩阵总表 + 公告栏（活动预告 + 手写公告） |
 | `Viewver.html` | 日历视图（FullCalendar）。**文件名就是 `Viewver`（历史拼写）**，`PUBLIC_PAGES` 里引用的名字要一致 |
 | `TVBoard.html` | 电视看板 |
 | `appsscript.json` | V8、时区 Asia/Singapore、网页应用 `executeAs: USER_DEPLOYING`、`access: DOMAIN`；没有进阶服务 |
@@ -42,7 +42,9 @@ F 时间(结束)    "HH:mm" 文字
 G 填写人        留空时自动带入 "姓名 (email)"
 H 填写日期      d/M/yyyy 文字，服务器决定（todayIso_）
 I 使用日期      d/M/yyyy 文字
-J 系统时间戳    yyyy-MM-dd HH:mm:ss；同一次提交共享同一个值 = "同批"；修改时保留
+J 系统时间戳    同一次提交共享同一个值 = "同批"；修改时保留。新资料由 batchStamp_() 产生
+               "yyyy-MM-dd HH:mm:ss.SSS"（精确到毫秒，避免同一秒的两次提交被当成同一批）；
+               旧资料只到秒，照样可用。它是批次的识别码，不要拿来做日期计算
 ```
 
 读取一律经过 `rowToRecordObj()`：日期统一成 `yyyy-MM-dd`（`normalizeDateToISO`），时间统一成 `HH:mm`（`cellTimeToString`，兼容已被表格转成 Date 的旧资料），并补一个组合字段 `时间`。A 栏 ID 为空的行一律跳过。
@@ -90,7 +92,7 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 | 类别 | 规则 | 函数 |
 |---|---|---|
 | 页面路由 | `doGet()`：`PUBLIC_PAGES`（`view`/`table`/`tv`）直接回传；**其他任何 page 值**一律当管理端，先过 `checkAdminWhitelist_()` | `doGet` |
-| 管理员写入/读取 | 第一行 `requireAdminAccess()` | `createRecord`、`updateRecord`、`batchDeleteRecords`、`createSpecialStatusEntries`、`deleteSpecialStatusEntries`、`saveAnnouncementContent`、`readRecordsForAdmin` |
+| 管理员写入/读取 | 第一行 `requireAdminAccess()` | `createRecord`、`updateRecord`、`updateBatch`、`batchDeleteRecords`、`createSpecialStatusEntries`、`deleteSpecialStatusEntries`、`saveAnnouncementContent`、`readRecordsForAdmin`、`readBatch` |
 | 拥有者维护 | 第一行 `requireOwner_()`（`getActiveUser() === getEffectiveUser()`，只有拥有者本人在编辑器运行才成立） | `migrateAllSheetsToSplitTimeSchema`、`fixTimeColumnFormatting`、`clearConfigCache`、`cleanupOldBookingMonthSheets`、`installMonthlyCleanupTrigger`、`uninstallMonthlyCleanupTrigger` |
 | 定时触发器入口 | `isGenuineTriggerEvent_(e, 名称)` 比对 `e.triggerUid` 是项目里真实存在的触发器，否则退回 `requireOwner_()`。**函数名不能改**（已安装的触发器绑定这个名字） | `cleanupOldTrashAndAuditLogs(e)` |
 | 公开读取 | 不需白名单，只读 | `getVenuesFromSheet`、`getUnitsFromSheet`、`getUnitColorMap`、`getSpecialStatusesFromSheet`、`getHolidaySettings`、`readRecordsForMonth`、`readRecordsForRange`、`readSpecialStatusForMonth`、`readSpecialStatusForRange`、`readSpecialStatusList`、`getTvBoardWeekData`、`getAnnouncementContent`、`getWebAppUrl` |
@@ -107,6 +109,10 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 - **`createRecord`**：锁内先扫完整批再写；每个月份表一次 `setValues()`；日志整批写入。回传 `{success, count}`。
 - **`updateRecord(id, record, monthHint)`**：用 `locateRecords_()` 找到那一行（先找提示的月份表，只读 A 栏）；找不到就报错（不会让已删除的记录复活）；冲突检查排除自己；**原地覆写**并保留系统时间戳；换月份时才搬表；旧版本进回收站。
 - **`batchDeleteRecords(ids, monthHints)`**：按表分组、由下往上删；回收站与日志整批写入。
+- **整批编辑**：`readBatch(timestamp)` 用 `findBatchRows_()` 扫描**所有**月份表找同一个系统时间戳的记录（整批可能超出管理端的资料范围，所以不靠前端的 `rawData`）。`updateBatch(timestamp, expectedIds, record)` 在锁内：
+  1. 重新找出整批，跟 `expectedIds` 比对；不一样（有人改过/删过）就拒绝。
+  2. 依新设定展开「日期 × 场地」，冲突检查排除整批旧 ID（`findConflictInIndex_` 的 `excludeId` 可以传 `Set`）。
+  3. **先写新记录**（沿用原本的系统时间戳），**再删旧记录**：新记录都写在各表最下面，不会改变旧记录的行号；中途失败最多多出重复，不会丢资料。旧记录进回收站，日志动作为「整批修改」/「整批修改(旧)」。
 
 ## 缓存
 
@@ -124,12 +130,13 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 
 ### Admin.html
 
-- 场地方块用 `venueTileRefs`（Map：场地编号 → {tile, input}）定位；楼栋分组 `getBlockGroupKey()`，「大栋」= `MAJOR_HALL_NAMES`（与 `Code.gs` 的 `TV_BOARD_VENUE_NAMES` 是同一份名单的两份拷贝，改一边要改另一边）。编辑模式 `isEditMode` 场地单选，并清掉结束日期/按星期重复。
+- 场地方块用 `venueTileRefs`（Map：场地编号 → {tile, input}）定位；楼栋分组 `getBlockGroupKey()`，「大栋」= `MAJOR_HALL_NAMES`（与 `Code.gs` 的 `TV_BOARD_VENUE_NAMES`、`Table.html` 的 `PREVIEW_HALL_NAMES` 是同一份名单，改一份要改全部）。编辑模式 `isEditMode` 场地单选，并清掉结束日期/按星期重复。
 - 勾选状态存在跨页集合 `selectedRecordIds`，不要依赖当前页面的 checkbox DOM。
 - 写入经过 `beginWrite()`/`endWrite()`（`writeInFlight` 防重复提交、停用按钮）；成功用 `showToast()`；载入失败用 `showPageError(msg, retryFn)`。
+- 整批编辑：`batchEdit = {timestamp, ids}`；`startBatchEdit()` 呼叫 `readBatch`，`fillBatchEditForm()` 把整批带进表单（场地可多选、显示结束日期/按星期重复），`inferBatchDatePattern()` 从实际日期推回"每天"或"固定星期几"；日期或"日期 × 场地"不完整时在 `#batchEditNote` 提醒会补回来。`resetForm()`、`editRow()` 会呼叫 `exitBatchEditMode()`。
 - 「资料范围」`#dataRangeSelect` → `readRecordsForAdmin('recent' | 'year' | 'all')`。删除/修改会带 `monthHintsForIds()` 给后端。删除后 `afterRecordsDeleted()` 处理「正在编辑的记录被删」。
 - 填写日期显示用 `localTodayIso()`（不能用 `valueAsDate = new Date()`，那是 UTC 日期）。
-- 公告编辑：`announcementLoadedValue` 判断未保存修改；预览与矩阵总表都用 `marked.parse()`。
+- 公告编辑：`announcementLoadedValue` 判断未保存修改；预览与矩阵总表都用 `marked.parse()`。编辑区只管「其他公告」，活动预告是矩阵总表自动生成的。
 
 ### Table.html
 
@@ -138,6 +145,13 @@ Apps Script 的**所有顶层函数**都能被浏览器用 `google.script.run.�
 - 每 5 分钟 `refreshMatrixSilently()`（不显示遮罩、失败不跳警告）；`monthRequestSeq` 丢弃过期月份的回应。
 - 固定栏：第一栏宽度 `--sticky-col1-w`（64px），第二栏 `left` 等于它；左上角表头格 `z-index: 12`。
 - 格子底色优先级：单位颜色（inline `!important`）> 特殊状态淡底（`!important`）> 假期 > 今天 > 周末。
+- **公告栏 = 活动预告 + 手写公告**：
+  - 活动预告 `renderEventPreview()` 纯前端生成，资料就是矩阵用的 `bookingRecords` / `specialStatusList`（不另外呼叫后端）。在 `renderMatrix()` 开头呼叫（所以切月份、5 分钟刷新都会跟着更新），场地载入失败的路径也会呼叫。
+  - **同类合并**：同礼堂 + 同活动 + 同单位（特殊状态：同礼堂 + 同状态）合并成一项，`formatDateRanges()` 把日期写成 `dd/MM/yyyy-dd/MM/yyyy`（连续段用「、」分开，超过 3 段写首尾 + 共几天）；日期范围相同的项目共用一个标题。时间不同的会列出所有时段。点开明细用的 `data-date`：今天 > 接下来第一天 > 第一天。
+  - 礼堂判断 `resolvePreviewHall()`：先用 `staticVenues` 把记录的场地对回场地，再看编号或名称是否包含 `PREVIEW_HALL_NAMES` 之一。**这份名单共有三份拷贝**：`Code.gs` 的 `TV_BOARD_VENUE_NAMES`、`Admin.html` 的 `MAJOR_HALL_NAMES`、`Table.html` 的 `PREVIEW_HALL_NAMES`，改一份要改全部。
+  - 点预告项目走 `showBookingModal(data-venue, data-date)`，`data-venue` 必须是 `recordIndex` 用的场地编号。
+  - 自动卷到今天：`previewScrolledMonth` 记录已卷过的月份，每个月只卷一次；`.announcement-panel` 是 `position: relative`（`offsetTop` 的基准），标题列 sticky。
+  - 手写公告在 `#manualAnnouncementSection`，没设置或空白时加 `d-none`；读取失败时如果之前已有内容就保留不覆盖。
 
 ### Viewver.html
 
